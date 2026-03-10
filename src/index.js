@@ -192,10 +192,15 @@ async function runMonitor(env) {
     }
 
     await markRunFinish(env);
+    // 這次成功執行，清除上一輪錯誤通知標記，讓之後新的錯誤可以再次通知
+    await env.LOCK_STATE.delete("last_error_notified");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await markRunFail(env, msg);
-    await sendTelegram(env, `門鎖監控錯誤：${msg}`);
+    // 只在錯誤訊息與上次通知不同時才發送 Telegram，避免 cron 重複洗版
+    if (await shouldNotifyError(env, msg)) {
+      await sendTelegram(env, `門鎖監控錯誤：${msg}`);
+    }
     throw err;
   } finally {
     await Promise.all([
@@ -433,6 +438,15 @@ async function readStatus(env) {
     last_run_finished_at_iso:
       finished > 0 ? new Date(finished).toISOString() : null,
   };
+}
+
+async function shouldNotifyError(env, msg) {
+  const prev = await env.LOCK_STATE.get("last_error_notified");
+  if (prev && prev === msg) {
+    return false;
+  }
+  await env.LOCK_STATE.put("last_error_notified", msg || "");
+  return true;
 }
 
 function sleep(ms) {
