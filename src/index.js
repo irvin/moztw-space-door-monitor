@@ -6,16 +6,8 @@ const LOCK_STATUS_SELECTOR_DEFAULT =
 const DEFAULT_CLOSED_REGEX = "(Closed)";
 const DEFAULT_OPEN_REGEX = "(Open)";
 
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    if (url.pathname === "/health") {
-      return json({ ok: true, time: new Date().toISOString() });
-    }
-
-    if (url.pathname === "/" && request.method === "GET") {
-      const status = await readStatus(env);
-      const html = `<!doctype html>
+function renderStatusHtml(status) {
+  return `<!doctype html>
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
@@ -100,7 +92,18 @@ export default {
   </script>
 </body>
 </html>`;
+}
 
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.pathname === "/health") {
+      return json({ ok: true, time: new Date().toISOString() });
+    }
+
+    if (url.pathname === "/" && request.method === "GET") {
+      const status = await readStatus(env);
+      const html = renderStatusHtml(status);
       return new Response(html, {
         status: 200,
         headers: { "content-type": "text/html; charset=utf-8" },
@@ -108,11 +111,6 @@ export default {
     }
 
     if (url.pathname === "/run" && request.method === "POST") {
-      ctx.waitUntil(runMonitor(env));
-      return json({ queued: true });
-    }
-
-    if (url.pathname === "/run-sync" && request.method === "POST") {
       try {
         await runMonitor(env);
         const [stage, ok, err] = await Promise.all([
@@ -153,6 +151,14 @@ export default {
 
     if (url.pathname === "/status" && request.method === "GET") {
       const status = await readStatus(env);
+      const accept = request.headers.get("Accept") || "";
+      if (accept.includes("text/html")) {
+        const html = renderStatusHtml(status);
+        return new Response(html, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
       return json(status);
     }
 
@@ -201,7 +207,6 @@ async function runMonitor(env) {
 }
 
 async function fetchLockStatusWithSessionOnly(env) {
-  assertEnvForSessionOnly(env);
   await saveRunStage(env, "browser_launch");
 
   const browser = await launch(env.MYBROWSER);
@@ -349,8 +354,8 @@ async function waitForAnySelector(page, selectors, fieldName, timeoutMs) {
   throw new Error(`等待 ${fieldName} 超時，嘗試過: ${selectors.join(" | ")}`);
 }
 
-async function ensureNotOnLoginPage(page, env) {
-  if (isLoginUrl(page.url(), env.LOGIN_URL)) {
+async function ensureNotOnLoginPage(page) {
+  if (isLoginUrl(page.url(), STATUS_URL_DEFAULT)) {
     throw new Error("目前仍在登入頁，未成功進入狀態頁");
   }
 }

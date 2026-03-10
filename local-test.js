@@ -46,15 +46,6 @@ function normalizeStatus(raw) {
   return `UNKNOWN(${raw.trim()})`;
 }
 
-async function waitEnter(prompt) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  await new Promise((resolve) => rl.question(prompt, resolve));
-  rl.close();
-}
-
 async function main() {
   assertEnv();
 
