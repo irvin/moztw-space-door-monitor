@@ -1,6 +1,7 @@
 import { launch } from "@cloudflare/playwright";
 
 const STATUS_URL_DEFAULT = "https://biz.candyhouse.co";
+const LOGIN_URL_DEFAULT = "https://biz.candyhouse.co/login";
 const LOCK_STATUS_SELECTOR_DEFAULT =
   'li.MuiListItem-root:has-text("工寮 Open Sensor") >> button.MuiIconButton-root';
 const DEFAULT_CLOSED_REGEX = "(Closed)";
@@ -255,16 +256,17 @@ async function fetchLockStatusWithSessionOnly(env) {
       );
     }
     // 等待實際狀態元素出現（與 local-test.js 對齊）
-    if (env.LOCK_STATUS_SELECTOR) {
+    const lockSelector = env.LOCK_STATUS_SELECTOR || LOCK_STATUS_SELECTOR_DEFAULT;
+    if (lockSelector) {
       await saveRunStage(env, "wait_lock_status_selector");
       await waitForAnySelector(
         page,
-        [env.LOCK_STATUS_SELECTOR],
+        [lockSelector],
         "lock status 元素",
         Number(env.STATUS_READY_TIMEOUT_MS || 15000)
       );
     }
-    await ensureNotOnLoginPage(page, env);
+    await ensureNotOnLoginPage(page);
     await saveRunStage(env, "read_status_text");
     const rawStatus = await readRawStatus(page);
     await env.LOCK_STATE.put("last_raw_status", rawStatus ?? "");
@@ -360,7 +362,7 @@ async function waitForAnySelector(page, selectors, fieldName, timeoutMs) {
 }
 
 async function ensureNotOnLoginPage(page) {
-  if (isLoginUrl(page.url(), STATUS_URL_DEFAULT)) {
+  if (isLoginUrl(page.url(), LOGIN_URL_DEFAULT)) {
     throw new Error("目前仍在登入頁，未成功進入狀態頁");
   }
 }
