@@ -113,7 +113,7 @@ export default {
 
     if (url.pathname === "/run" && request.method === "POST") {
       try {
-        await runMonitor(env);
+        await runMonitor(env, ctx);
         const [stage, ok, err] = await Promise.all([
           env.LOCK_STATE.get("last_run_stage"),
           env.LOCK_STATE.get("last_run_ok"),
@@ -151,15 +151,32 @@ export default {
     }
 
     if (url.pathname === "/status" && request.method === "GET") {
-      const status = await readStatus(env);
       const accept = request.headers.get("Accept") || "";
-      if (accept.includes("text/html")) {
+      const wantsHtml = accept.includes("text/html");
+
+      if (wantsHtml) {
+        const cache = caches.default;
+        const cached = await cache.match(request);
+        if (cached) {
+          return cached;
+        }
+      }
+
+      const status = await readStatus(env);
+
+      if (wantsHtml) {
         const html = renderStatusHtml(status);
-        return new Response(html, {
+        const resp = new Response(html, {
           status: 200,
           headers: { "content-type": "text/html; charset=utf-8" },
         });
+        resp.headers.set("Cache-Control", "public, max-age=900");
+        if (ctx) {
+          ctx.waitUntil(caches.default.put(request, resp.clone()));
+        }
+        return resp;
       }
+
       return json(status);
     }
 
@@ -167,11 +184,11 @@ export default {
   },
 
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(runMonitor(env));
+    ctx.waitUntil(runMonitor(env, ctx));
   },
 };
 
-async function runMonitor(env) {
+async function runMonitor(env, ctx) {
   const now = Date.now();
   const runId = crypto.randomUUID();
   await markRunStart(env, runId);
@@ -187,9 +204,15 @@ async function runMonitor(env) {
     if (!prevStatus) {
       await env.LOCK_STATE.put("last_status", status);
       await sendTelegram(env, status === "OPEN" ? "工寮現在開門中" : "工寮現在已關門");
+      if (ctx) {
+        ctx.waitUntil(invalidateStatusHtmlCache());
+      }
     } else if (prevStatus !== status) {
       await env.LOCK_STATE.put("last_status", status);
       await sendTelegram(env, status === "OPEN" ? "工寮現在開門中" : "工寮現在已關門");
+      if (ctx) {
+        ctx.waitUntil(invalidateStatusHtmlCache());
+      }
     }
 
     await markRunFinish(env);
@@ -440,6 +463,21 @@ async function readStatus(env) {
     last_run_finished_at_iso:
       finished > 0 ? new Date(finished).toISOString() : null,
   };
+}
+
+async function invalidateStatusHtmlCache() {
+  const cache = caches.default;
+  const urls = [
+    "https://door-lock-monitor.irvinfly.workers.dev/status",
+    "https://moztw.space/status",
+  ];
+  await Promise.all(
+    urls.map((u) =>
+      cache.delete(new Request(u, {
+        method: "GET",
+      })),
+    ),
+  );
 }
 
 async function shouldNotifyError(env, msg) {
