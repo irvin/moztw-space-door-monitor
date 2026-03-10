@@ -6,40 +6,32 @@ import dotenv from "dotenv";
 import fs from "node:fs";
 import readline from "node:readline";
 
-// 從 .dev.vars 載入設定（wrangler 也用同一份）
+// 從 .dev.vars 載入本機 secret（例如 LOGIN_EMAIL / SESSION_IMPORT_URL）
 if (fs.existsSync(".dev.vars")) {
   dotenv.config({ path: ".dev.vars" });
 } else if (fs.existsSync(".env")) {
   dotenv.config();
 }
 
-const {
-  LOGIN_URL,
-  STATUS_URL,
-  LOGIN_EMAIL,
-  EMAIL_INPUT_SELECTOR,
-  SEND_CODE_BUTTON_SELECTOR,
-  OTP_INPUT_SELECTOR,
-  LOCK_STATUS_SELECTOR,
-  STATUS_OPEN_REGEX,
-  STATUS_CLOSED_REGEX,
-  SESSION_IMPORT_URL,
-} = process.env;
+// 與線上 Worker 對齊的固定設定
+const LOGIN_URL_DEFAULT = "https://biz.candyhouse.co/login";
+const STATUS_URL_DEFAULT = "https://biz.candyhouse.co";
+const LOCK_STATUS_SELECTOR_DEFAULT =
+  'li.MuiListItem-root:has-text("工寮 Open Sensor") >> button.MuiIconButton-root';
+const STATUS_OPEN_REGEX_DEFAULT = "(Open)";
+const STATUS_CLOSED_REGEX_DEFAULT = "(Closed)";
 
-const DEFAULT_OPEN_REGEX = "(unlocked|open|開門|未上鎖)";
-const DEFAULT_CLOSED_REGEX = "(locked|closed|關門|上鎖)";
+// 本機僅從環境讀取真正需要保密或可能因環境不同而改的值
+const { LOGIN_EMAIL, SESSION_IMPORT_URL } = process.env;
+
+// login 頁面的 selector 採內建預設，若未來介面改版再來調整即可
+const EMAIL_INPUT_SELECTOR_DEFAULT = "input[type='email']";
+const SEND_CODE_BUTTON_SELECTOR_DEFAULT = "button:has-text('Send code')";
+const OTP_INPUT_SELECTOR_DEFAULT = "input[name='otp']";
 
 function assertEnv() {
-  const required = [
-    "LOGIN_URL",
-    "STATUS_URL",
-    "LOGIN_EMAIL",
-    "EMAIL_INPUT_SELECTOR",
-    "SEND_CODE_BUTTON_SELECTOR",
-    "OTP_INPUT_SELECTOR",
-    "LOCK_STATUS_SELECTOR",
-  ];
-  const missing = required.filter((k) => !process.env[k]);
+  const missing = [];
+  if (!LOGIN_EMAIL) missing.push("LOGIN_EMAIL");
   if (missing.length > 0) {
     throw new Error(`缺少必要環境變數: ${missing.join(", ")}`);
   }
@@ -47,14 +39,8 @@ function assertEnv() {
 
 function normalizeStatus(raw) {
   const text = raw.trim().toLowerCase();
-  const closedRegex = new RegExp(
-    STATUS_CLOSED_REGEX || DEFAULT_CLOSED_REGEX,
-    "i",
-  );
-  const openRegex = new RegExp(
-    STATUS_OPEN_REGEX || DEFAULT_OPEN_REGEX,
-    "i",
-  );
+  const closedRegex = new RegExp(STATUS_CLOSED_REGEX_DEFAULT, "i");
+  const openRegex = new RegExp(STATUS_OPEN_REGEX_DEFAULT, "i");
   if (openRegex.test(text)) return "OPEN";
   if (closedRegex.test(text)) return "CLOSED";
   return `UNKNOWN(${raw.trim()})`;
@@ -72,13 +58,20 @@ async function waitEnter(prompt) {
 async function main() {
   assertEnv();
 
+  const loginUrl = LOGIN_URL_DEFAULT;
+  const statusUrl = STATUS_URL_DEFAULT;
+  const emailSelector = EMAIL_INPUT_SELECTOR_DEFAULT;
+  const sendCodeSelector = SEND_CODE_BUTTON_SELECTOR_DEFAULT;
+  const otpInputSelector = OTP_INPUT_SELECTOR_DEFAULT;
+  const lockStatusSelector = LOCK_STATUS_SELECTOR_DEFAULT;
+
   console.log("使用設定：");
-  console.log(`LOGIN_URL = ${LOGIN_URL}`);
-  console.log(`STATUS_URL = ${STATUS_URL}`);
-  console.log(`EMAIL_INPUT_SELECTOR = ${EMAIL_INPUT_SELECTOR}`);
-  console.log(`SEND_CODE_BUTTON_SELECTOR = ${SEND_CODE_BUTTON_SELECTOR}`);
-  console.log(`OTP_INPUT_SELECTOR = ${OTP_INPUT_SELECTOR}`);
-  console.log(`LOCK_STATUS_SELECTOR = ${LOCK_STATUS_SELECTOR}`);
+  console.log(`LOGIN_URL = ${loginUrl}`);
+  console.log(`STATUS_URL = ${statusUrl}`);
+  console.log(`EMAIL_INPUT_SELECTOR = ${emailSelector}`);
+  console.log(`SEND_CODE_BUTTON_SELECTOR = ${sendCodeSelector}`);
+  console.log(`OTP_INPUT_SELECTOR = ${otpInputSelector}`);
+  console.log(`LOCK_STATUS_SELECTOR = ${lockStatusSelector}`);
   console.log("");
 
   const browser = await chromium.launch({ headless: false });
@@ -87,13 +80,13 @@ async function main() {
   try {
     // 1. 開登入頁，填 email，按「發送驗證碼」
     console.log("打開登入頁...");
-    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+    await page.goto(loginUrl, { waitUntil: "domcontentloaded" });
 
     console.log("填入 email...");
-    await page.fill(EMAIL_INPUT_SELECTOR, LOGIN_EMAIL);
+    await page.fill(emailSelector, LOGIN_EMAIL);
 
     console.log("按下發送驗證碼按鈕...");
-    await page.click(SEND_CODE_BUTTON_SELECTOR);
+    await page.click(sendCodeSelector);
 
     console.log("");
     console.log("請到你的 email 收信，取得 4 碼 OTP。");
@@ -111,7 +104,7 @@ async function main() {
     }
 
     console.log("在頁面填入 OTP...");
-    await page.fill(OTP_INPUT_SELECTOR, code.trim());
+    await page.fill(otpInputSelector, code.trim());
 
     console.log("等待登入完成（URL 不再是 /login）...");
     await page.waitForURL(
@@ -128,10 +121,10 @@ async function main() {
 
     // 2. 直接在目前頁面讀取 LOCK_STATUS_SELECTOR（你剛登入後看到的那頁）
     console.log("等待 lock status 元素出現...");
-    await page.waitForSelector(LOCK_STATUS_SELECTOR, { timeout: 15000 });
+    await page.waitForSelector(lockStatusSelector, { timeout: 15000 });
 
     console.log("讀取 lock status 元素文字...");
-    const locator = page.locator(LOCK_STATUS_SELECTOR).first();
+    const locator = page.locator(lockStatusSelector).first();
     const count = await locator.count();
     if (count === 0) {
       throw new Error(

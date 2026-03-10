@@ -3,8 +3,15 @@ main = "src/index.js"
 compatibility_date = "2025-12-01"
 compatibility_flags = ["nodejs_compat"]
 
+[limits]
+cpu_ms = 500
+
+routes = [
+  { pattern = "moztw.space/status*", zone_name = "moztw.space" },
+]
+
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/10 * * * *"]
 
 [[kv_namespaces]]
 binding = "LOCK_STATE"
@@ -14,8 +21,4 @@ id = "c643dd3deb164473ab7df3c79f4baeac"
 binding = "MYBROWSER"
 
 [vars]
-STATUS_URL = "https://biz.candyhouse.co"
-LOCK_STATUS_SELECTOR = 'li.MuiListItem-root:has-text("工寮 Open Sensor") >> button.MuiIconButton-root'
-STATUS_OPEN_REGEX = "(Open)"
-STATUS_CLOSED_REGEX = "(Closed)"
 TELEGRAM_ENABLED = "true"        # 或 "false" 視你要不要開通知

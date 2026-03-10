@@ -1,13 +1,110 @@
 import { launch } from "@cloudflare/playwright";
 
-const DEFAULT_CLOSED_REGEX = "(locked|closed|關門|上鎖)";
-const DEFAULT_OPEN_REGEX = "(unlocked|open|開門|未上鎖)";
+const STATUS_URL_DEFAULT = "https://biz.candyhouse.co";
+const LOCK_STATUS_SELECTOR_DEFAULT =
+  'li.MuiListItem-root:has-text("工寮 Open Sensor") >> button.MuiIconButton-root';
+const DEFAULT_CLOSED_REGEX = "(Closed)";
+const DEFAULT_OPEN_REGEX = "(Open)";
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
       return json({ ok: true, time: new Date().toISOString() });
+    }
+
+    if (url.pathname === "/" && request.method === "GET") {
+      const status = await readStatus(env);
+      const html = `<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <title>工寮門鎖狀態</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0f172a; color:#e5e7eb; margin:0; padding:24px; }
+    .card { max-width:480px; margin:0 auto; background:#020617; border-radius:16px; padding:24px 20px 20px; box-shadow:0 20px 40px rgba(15,23,42,.7); border:1px solid #1e293b; }
+    h1 { margin:0 0 12px; font-size:22px; letter-spacing:0.04em; text-transform:uppercase; color:#94a3b8; }
+    .status { font-size:40px; font-weight:700; margin:4px 0 8px; }
+    .status-open { color:#4ade80; }
+    .status-closed { color:#f97373; }
+    .status-unknown { color:#eab308; font-size:26px; }
+    .label { font-size:12px; text-transform:uppercase; letter-spacing:0.12em; color:#64748b; margin-top:12px; }
+    .value { font-size:14px; color:#e5e7eb; margin-top:4px; word-break:break-word; }
+    .meta { margin-top:12px; font-size:12px; color:#9ca3af; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:11px; background:#020617; padding:2px 4px; border-radius:4px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Door Lock Monitor</h1>
+    <div class="label">目前狀態</div>
+    <div class="status ${
+      status.last_status === "OPEN"
+        ? "status-open"
+        : status.last_status === "CLOSED"
+        ? "status-closed"
+        : "status-unknown"
+    }">${status.last_status || "UNKNOWN"}</div>
+
+    <div class="label">最近檢查完成時間</div>
+    <div class="value" id="last-finished" data-utc="${status.last_run_finished_at_iso || ""}">
+      ${status.last_run_finished_at_iso || "尚無紀錄"}
+    </div>
+
+    <div class="label">最近執行結果</div>
+    <div class="value">
+      ${status.last_run_ok === "1" ? "成功" : status.last_run_ok === "0" ? "失敗" : "未知"}
+      ${status.last_run_error ? ` - ${status.last_run_error}` : ""}
+    </div>
+
+    <div class="meta">
+      Run ID: <code>${status.last_run_id || "-"}</code>
+      <br/>
+      上次開始時間: <code id="last-started" data-utc="${status.last_run_started_at_iso || ""}">${status.last_run_started_at_iso || "尚無紀錄"}</code>
+      <br/>
+      原始狀態文字: <code>${(status.last_raw_status || "").slice(0, 120) || "-"}</code>
+    </div>
+  </div>
+  <script>
+    (function () {
+      try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+        const finishedEl = document.getElementById("last-finished");
+        const startedEl = document.getElementById("last-started");
+        if (!finishedEl || !startedEl) return;
+
+        const fmt = new Intl.DateTimeFormat("zh-TW", {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+
+        const apply = (el) => {
+          const v = el.getAttribute("data-utc");
+          if (!v) return;
+          const d = new Date(v);
+          if (Number.isNaN(d.getTime())) return;
+          el.textContent = fmt.format(d) + " (" + tz + ")";
+        };
+
+        apply(finishedEl);
+        apply(startedEl);
+      } catch {
+        // ignore client-side time formatting errors
+      }
+    })();
+  </script>
+</body>
+</html>`;
+
+      return new Response(html, {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
     }
 
     if (url.pathname === "/run" && request.method === "POST") {
@@ -55,30 +152,8 @@ export default {
     }
 
     if (url.pathname === "/status" && request.method === "GET") {
-      const keys = [
-        "last_run_id",
-        "last_run_started_at",
-        "last_run_finished_at",
-        "last_run_stage",
-        "last_run_ok",
-        "last_run_error",
-        "last_status",
-      ];
-      const entries = await Promise.all(
-        keys.map(async (k) => [k, await env.LOCK_STATE.get(k)])
-      );
-      const base = Object.fromEntries(entries);
-
-      const started = Number(base.last_run_started_at || 0);
-      const finished = Number(base.last_run_finished_at || 0);
-
-      return json({
-        ...base,
-        last_run_started_at_iso:
-          started > 0 ? new Date(started).toISOString() : null,
-        last_run_finished_at_iso:
-          finished > 0 ? new Date(finished).toISOString() : null,
-      });
+      const status = await readStatus(env);
+      return json(status);
     }
 
     return json({ ok: false, message: "Not Found" }, 404);
@@ -159,7 +234,7 @@ async function fetchLockStatusWithSessionOnly(env) {
 
   try {
     await saveRunStage(env, "open_status_page");
-    await page.goto(env.STATUS_URL, { waitUntil: "domcontentloaded" });
+    await page.goto(STATUS_URL_DEFAULT, { waitUntil: "domcontentloaded" });
     if (env.STATUS_READY_SELECTOR) {
       await saveRunStage(env, "wait_status_ready_selector");
       await waitForAnySelector(
@@ -181,8 +256,9 @@ async function fetchLockStatusWithSessionOnly(env) {
     }
     await ensureNotOnLoginPage(page, env);
     await saveRunStage(env, "read_status_text");
-    const rawStatus = await readRawStatus(page, env);
-    const status = normalizeStatus(rawStatus, env);
+    const rawStatus = await readRawStatus(page);
+    await env.LOCK_STATE.put("last_raw_status", rawStatus ?? "");
+    const status = normalizeStatus(rawStatus);
     await persistSessionCookies(context, env);
     await saveRunStage(env, `status=${status}`);
     return status;
@@ -193,10 +269,10 @@ async function fetchLockStatusWithSessionOnly(env) {
   }
 }
 
-function normalizeStatus(rawStatus, env) {
+function normalizeStatus(rawStatus) {
   const text = rawStatus.trim().toLowerCase();
-  const closedRegex = new RegExp(env.STATUS_CLOSED_REGEX || DEFAULT_CLOSED_REGEX, "i");
-  const openRegex = new RegExp(env.STATUS_OPEN_REGEX || DEFAULT_OPEN_REGEX, "i");
+  const closedRegex = new RegExp(DEFAULT_CLOSED_REGEX, "i");
+  const openRegex = new RegExp(DEFAULT_OPEN_REGEX, "i");
 
   if (openRegex.test(text)) return "OPEN";
   if (closedRegex.test(text)) return "CLOSED";
@@ -228,53 +304,8 @@ async function sendTelegram(env, text) {
   }
 }
 
-function assertEnv(env) {
-  const required = [
-    "STATUS_URL",
-  ];
-
-  const missing = required.filter((k) => !env[k]);
-  if (missing.length > 0) {
-    throw new Error(`缺少必要環境變數: ${missing.join(", ")}`);
-  }
-}
-
-function assertEnvForSessionOnly(env) {
-  const required = ["STATUS_URL"];
-  const missing = required.filter((k) => !env[k]);
-  if (missing.length > 0) {
-    throw new Error(`缺少必要環境變數: ${missing.join(", ")}`);
-  }
-}
-
-async function fillByCandidates(page, selectors, value, fieldName) {
-  for (const selector of selectors) {
-    const loc = await findActionableLocator(page, selector);
-    if (loc) {
-      await loc.fill(value);
-      return;
-    }
-  }
-  throw new Error(`找不到 ${fieldName}，嘗試過: ${selectors.join(" | ")}`);
-}
-
-async function clickByCandidates(page, selectors, fieldName) {
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    for (const selector of selectors) {
-      const loc = await findActionableLocator(page, selector);
-      if (loc) {
-        await loc.click();
-        return;
-      }
-    }
-    await sleep(400);
-  }
-  throw new Error(`找不到 ${fieldName}，嘗試過: ${selectors.join(" | ")}`);
-}
-
-async function readRawStatus(page, env) {
-  const selectors = buildCandidates(env.LOCK_STATUS_SELECTOR, []);
+async function readRawStatus(page) {
+  const selectors = buildCandidates(LOCK_STATUS_SELECTOR_DEFAULT, []);
   for (const selector of selectors) {
     const loc = await findActionableLocator(page, selector);
     if (loc) {
@@ -371,6 +402,34 @@ function buildCandidates(primary, fallbacks) {
   return list;
 }
 
+async function readStatus(env) {
+  const keys = [
+    "last_run_id",
+    "last_run_started_at",
+    "last_run_finished_at",
+    "last_run_stage",
+    "last_run_ok",
+    "last_run_error",
+    "last_status",
+    "last_raw_status",
+  ];
+  const entries = await Promise.all(
+    keys.map(async (k) => [k, await env.LOCK_STATE.get(k)])
+  );
+  const base = Object.fromEntries(entries);
+
+  const started = Number(base.last_run_started_at || 0);
+  const finished = Number(base.last_run_finished_at || 0);
+
+  return {
+    ...base,
+    last_run_started_at_iso:
+      started > 0 ? new Date(started).toISOString() : null,
+    last_run_finished_at_iso:
+      finished > 0 ? new Date(finished).toISOString() : null,
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -380,15 +439,6 @@ function json(data, status = 200) {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
-}
-
-async function saveRunState(env, stage, { ok, error }) {
-  await Promise.all([
-    env.LOCK_STATE.put("last_run_started_at", String(Date.now())),
-    env.LOCK_STATE.put("last_run_stage", stage),
-    env.LOCK_STATE.put("last_run_ok", ok),
-    env.LOCK_STATE.put("last_run_error", error || ""),
-  ]);
 }
 
 async function saveRunStage(env, stage) {
