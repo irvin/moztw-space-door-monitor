@@ -4,7 +4,7 @@ compatibility_date = "2025-12-01"
 compatibility_flags = ["nodejs_compat"]
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/15 * * * *"]
 
 [[kv_namespaces]]
 binding = "LOCK_STATE"
