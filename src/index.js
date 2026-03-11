@@ -200,6 +200,13 @@ async function runMonitor(env, ctx) {
   try {
     const status = await fetchLockStatusWithSessionOnly(env);
     const prevStatus = await env.LOCK_STATE.get("last_status");
+    const hadErrorNotified = await env.LOCK_STATE.get("last_error_notified");
+
+    // 若前一輪曾有錯誤並發出通知，先發恢復正常訊息，再處理本輪的開關門狀態
+    if (hadErrorNotified) {
+      await sendTelegram(env, "門鎖監控已恢復正常");
+      await env.LOCK_STATE.delete("last_error_notified");
+    }
 
     if (!prevStatus) {
       await env.LOCK_STATE.put("last_status", status);
@@ -216,8 +223,6 @@ async function runMonitor(env, ctx) {
     }
 
     await markRunFinish(env);
-    // 這次成功執行，清除上一輪錯誤通知標記，讓之後新的錯誤可以再次通知
-    await env.LOCK_STATE.delete("last_error_notified");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await markRunFail(env, msg);
