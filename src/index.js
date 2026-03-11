@@ -180,6 +180,64 @@ export default {
       return json(status);
     }
 
+    if (url.pathname === "/api" && request.method === "GET") {
+      const status = await readStatus(env);
+
+      const open =
+        status.last_status === "OPEN"
+          ? true
+          : status.last_status === "CLOSED"
+          ? false
+          : undefined;
+      const lastchangeMs = Number(status.last_run_finished_at || 0);
+      const lastchange =
+        Number.isFinite(lastchangeMs) && lastchangeMs > 0
+          ? Math.floor(lastchangeMs / 1000)
+          : undefined;
+
+      const payload = {
+        api_compatibility: ["15"],
+        space: "MozTW Space",
+        logo: "https://moztw.space/closed.png",
+        url: "https://moztw.org/space",
+        location: {
+          timezone: "Asia/Taipei",
+          country_code: "TW",
+        },
+        state: {
+          ...(typeof open === "boolean" ? { open } : {}),
+          ...(lastchange ? { lastchange } : {}),
+          message:
+            status.last_status === "OPEN"
+              ? "Space is open"
+              : status.last_status === "CLOSED"
+              ? "Space is closed"
+              : "Space state unknown",
+          icon: {
+            open: "https://moztw.space/open.png",
+            closed: "https://moztw.space/closed.png",
+          },
+        },
+        contact: {
+          email: "space@moztw.org",
+        },
+        // 自訂擴充欄位
+        // ext_moztw: {
+        //   door_last_status: status.last_status || null,
+        //   door_last_run_started_at: status.last_run_started_at_iso || null,
+        //   door_last_run_finished_at: status.last_run_finished_at_iso || null,
+        // },
+      };
+
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "access-control-allow-origin": "*",
+        },
+      });
+    }
+
     return json({ ok: false, message: "Not Found" }, 404);
   },
 

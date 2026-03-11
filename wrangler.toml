@@ -8,6 +8,7 @@ cpu_ms = 500
 
 routes = [
   { pattern = "moztw.space/status*", zone_name = "moztw.space" },
+  { pattern = "moztw.space/api*", zone_name = "moztw.space" },
 ]
 
 [triggers]
