@@ -1,5 +1,6 @@
-// 本機用 Playwright 腳本：開登入頁、幫你填 email、發 OTP，等你手動在頁面輸入 OTP，
-// 然後開狀態頁讀取「工寮 Open Sensor」右邊按鈕文字並正規化成 OPEN/CLOSED。
+// 本機用 Playwright 腳本：開登入頁，讓你手動完成登入，
+// 然後在登入後的狀態頁讀取「工寮 Open Sensor」那一列的文字並正規化成 OPEN/CLOSED，
+// 最後把 cookies + localStorage 上傳到 Cloudflare Worker。
 
 import { chromium } from "playwright";
 import dotenv from "dotenv";
@@ -17,25 +18,12 @@ if (fs.existsSync(".dev.vars")) {
 const LOGIN_URL_DEFAULT = "https://biz.candyhouse.co/login";
 const STATUS_URL_DEFAULT = "https://biz.candyhouse.co";
 const LOCK_STATUS_SELECTOR_DEFAULT =
-  'li.MuiListItem-root:has-text("工寮 Open Sensor") >> button.MuiIconButton-root';
+  'li:has-text("工寮 Open Sensor")';
 const STATUS_OPEN_REGEX_DEFAULT = "(Open)";
 const STATUS_CLOSED_REGEX_DEFAULT = "(Closed)";
 
-// 本機僅從環境讀取真正需要保密或可能因環境不同而改的值
-const { LOGIN_EMAIL, SESSION_IMPORT_URL } = process.env;
-
-// login 頁面的 selector 採內建預設，若未來介面改版再來調整即可
-const EMAIL_INPUT_SELECTOR_DEFAULT = "input[type='email']";
-const SEND_CODE_BUTTON_SELECTOR_DEFAULT = "button:has-text('Send code')";
-const OTP_INPUT_SELECTOR_DEFAULT = "input[name='otp']";
-
-function assertEnv() {
-  const missing = [];
-  if (!LOGIN_EMAIL) missing.push("LOGIN_EMAIL");
-  if (missing.length > 0) {
-    throw new Error(`缺少必要環境變數: ${missing.join(", ")}`);
-  }
-}
+// 本機僅從環境讀取需要保密的值
+const { SESSION_IMPORT_URL } = process.env;
 
 function normalizeStatus(raw) {
   const text = raw.trim().toLowerCase();
@@ -47,21 +35,13 @@ function normalizeStatus(raw) {
 }
 
 async function main() {
-  assertEnv();
-
   const loginUrl = LOGIN_URL_DEFAULT;
   const statusUrl = STATUS_URL_DEFAULT;
-  const emailSelector = EMAIL_INPUT_SELECTOR_DEFAULT;
-  const sendCodeSelector = SEND_CODE_BUTTON_SELECTOR_DEFAULT;
-  const otpInputSelector = OTP_INPUT_SELECTOR_DEFAULT;
   const lockStatusSelector = LOCK_STATUS_SELECTOR_DEFAULT;
 
   console.log("使用設定：");
   console.log(`LOGIN_URL = ${loginUrl}`);
   console.log(`STATUS_URL = ${statusUrl}`);
-  console.log(`EMAIL_INPUT_SELECTOR = ${emailSelector}`);
-  console.log(`SEND_CODE_BUTTON_SELECTOR = ${sendCodeSelector}`);
-  console.log(`OTP_INPUT_SELECTOR = ${otpInputSelector}`);
   console.log(`LOCK_STATUS_SELECTOR = ${lockStatusSelector}`);
   console.log("");
 
@@ -69,35 +49,24 @@ async function main() {
   const page = await browser.newPage();
 
   try {
-    // 1. 開登入頁，填 email，按「發送驗證碼」
+    // 1. 開登入頁，改為「你手動完成整個登入流程」
     console.log("打開登入頁...");
     await page.goto(loginUrl, { waitUntil: "domcontentloaded" });
 
-    console.log("填入 email...");
-    await page.fill(emailSelector, LOGIN_EMAIL);
-
-    console.log("按下發送驗證碼按鈕...");
-    await page.click(sendCodeSelector);
-
     console.log("");
-    console.log("請到你的 email 收信，取得 4 碼 OTP。");
+    console.log("請在剛開啟的瀏覽器視窗中手動完成登入流程，");
+    console.log("直到你看到包含「工寮 Open Sensor」那一列的狀態頁為止。");
+    console.log("完成後回到此終端機，按 Enter 繼續。");
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
     });
-    const code = await new Promise((resolve) =>
-      rl.question("請在此輸入收到的 4 碼 OTP（只輸入數字）：", resolve),
+    await new Promise((resolve) =>
+      rl.question("登入完成後請按 Enter 繼續...", () => resolve()),
     );
     rl.close();
 
-    if (!code || !/^[0-9]{4}$/.test(code.trim())) {
-      throw new Error(`OTP 格式不正確: ${code}`);
-    }
-
-    console.log("在頁面填入 OTP...");
-    await page.fill(otpInputSelector, code.trim());
-
-    console.log("等待登入完成（URL 不再是 /login）...");
+    console.log("確認目前頁面已不在 /login...");
     await page.waitForURL(
       (url) => {
         try {
