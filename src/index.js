@@ -367,13 +367,24 @@ async function fetchLockStatusWithSessionOnly(env) {
 }
 
 function normalizeStatus(rawStatus) {
-  const text = rawStatus.trim().toLowerCase();
+  const raw = rawStatus.trim();
+  const text = raw.toLowerCase();
+
+  // 先依照字串中最後一次出現的位置決定，避免同時含有 "open" 與 "closed" 時誤判
+  const idxOpen = text.lastIndexOf("open");
+  const idxClosed = text.lastIndexOf("closed");
+  if (idxOpen !== -1 || idxClosed !== -1) {
+    if (idxClosed > idxOpen) return "CLOSED";
+    if (idxOpen > idxClosed) return "OPEN";
+  }
+
+  // 回退到舊的正則判斷（保留原行為以防未來文字有變形）
   const closedRegex = new RegExp(DEFAULT_CLOSED_REGEX, "i");
   const openRegex = new RegExp(DEFAULT_OPEN_REGEX, "i");
 
   if (openRegex.test(text)) return "OPEN";
   if (closedRegex.test(text)) return "CLOSED";
-  return `UNKNOWN(${rawStatus.trim()})`;
+  return `UNKNOWN(${raw})`;
 }
 
 async function sendTelegram(env, text) {
