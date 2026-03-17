@@ -267,13 +267,13 @@ async function runMonitor(env, ctx) {
 
     if (!prevStatus) {
       await env.LOCK_STATE.put("last_status", status);
-      await sendTelegram(env, status === "OPEN" ? "工寮現在開門中" : "工寮現在已關門");
+      await sendTelegram(env, status === "OPEN" ? "工寮大門：已開啟" : "工寮大門：已關閉");
       if (ctx) {
         ctx.waitUntil(invalidateStatusHtmlCache());
       }
     } else if (prevStatus !== status) {
       await env.LOCK_STATE.put("last_status", status);
-      await sendTelegram(env, status === "OPEN" ? "工寮現在開門中" : "工寮現在已關門");
+      await sendTelegram(env, status === "OPEN" ? "工寮大門：已開啟" : "工寮大門：已關閉");
       if (ctx) {
         ctx.waitUntil(invalidateStatusHtmlCache());
       }
