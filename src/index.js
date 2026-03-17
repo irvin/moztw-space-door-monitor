@@ -2,8 +2,7 @@ import { launch } from "@cloudflare/playwright";
 
 const STATUS_URL_DEFAULT = "https://biz.candyhouse.co";
 const LOGIN_URL_DEFAULT = "https://biz.candyhouse.co/login";
-const LOCK_STATUS_SELECTOR_DEFAULT =
-  'li.MuiListItem-root:has-text("工寮 Open Sensor") >> button.MuiIconButton-root';
+const LOCK_STATUS_SELECTOR_DEFAULT = 'li:has-text("工寮 Open Sensor")';
 const DEFAULT_CLOSED_REGEX = "(Closed)";
 const DEFAULT_OPEN_REGEX = "(Open)";
 
