@@ -198,36 +198,46 @@ export default {
 
       const payload = {
         api_compatibility: ["15"],
-        space: "MozTW Space",
-        logo: "https://moztw.space/closed.png",
-        url: "https://moztw.org/space",
+        space: "MozTW Space / Mozilla Community Space Taipei",
+        logo: "https://moztw.org/space/images/logo.png",
+        url: "https://moztw.space",
         location: {
+          address: "Rm. 1105, 11F, 99 Chongqing S. Rd. Sec I, Zhongzheng Dist., Taipei City 100, Taiwan",
+          lat: 25.0429807,
+          lon: 121.5129848,
           timezone: "Asia/Taipei",
           country_code: "TW",
+          hint: "Visit whenever we are open. Also check Telegram (https://t.me/moztw_general) to see if space is currently open (channel name postfix with （工寮開放中）). Weekly meetup Fri 1930-2200. Calendar at cal.moztw.space"
         },
         state: {
           ...(typeof open === "boolean" ? { open } : {}),
           ...(lastchange ? { lastchange } : {}),
-          message:
-            status.last_status === "OPEN"
-              ? "Space is open"
-              : status.last_status === "CLOSED"
-              ? "Space is closed"
-              : "Space state unknown",
           icon: {
-            open: "https://moztw.space/open.png",
-            closed: "https://moztw.space/closed.png",
+            open: "https://moztw.org/space/images/open.png",
+            closed: "https://moztw.org/space/images/closed.png",
           },
         },
         contact: {
           email: "space@moztw.org",
+          facebook: "https://www.facebook.com/moztw.space",
+          foursquare: "5370b8a1498e8c14504d0007",
+          telegram: "https://t.me/moztw_general",
         },
-        // 自訂擴充欄位
-        // ext_moztw: {
-        //   door_last_status: status.last_status || null,
-        //   door_last_run_started_at: status.last_run_started_at_iso || null,
-        //   door_last_run_finished_at: status.last_run_finished_at_iso || null,
-        // },
+        issue_report_channels: ["email"],
+        feeds: {
+          blog: {
+            type: "rss",
+            url: "https://medium.com/feed/mozilla-related",
+          },
+          calendar: {
+            type: "ical",
+            url: "https://calendar.google.com/calendar/ical/3fs8qeakm6ij88hibpb5bsg3mc%40group.calendar.google.com/public/basic.ics",
+          },
+          flickr: {
+            type: "atom",
+            url: "https://www.flickr.com/services/feeds/groups_pool.gne?id=2664848@N20&lang=en-us&format=atom",
+          }
+        }
       };
 
       return new Response(JSON.stringify(payload), {
