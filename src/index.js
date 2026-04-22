@@ -182,6 +182,12 @@ export default {
     }
 
     if (url.pathname === "/api" && request.method === "GET") {
+      const cache = caches.default;
+      const cached = await cache.match(request);
+      if (cached) {
+        return cached;
+      }
+
       const status = await readStatus(env);
 
       const open =
@@ -240,13 +246,18 @@ export default {
         }
       };
 
-      return new Response(JSON.stringify(payload), {
+      const resp = new Response(JSON.stringify(payload), {
         status: 200,
         headers: {
           "content-type": "application/json; charset=utf-8",
           "access-control-allow-origin": "*",
         },
       });
+      resp.headers.set("Cache-Control", "public, max-age=300, s-maxage=300");
+      if (ctx) {
+        ctx.waitUntil(cache.put(request, resp.clone()));
+      }
+      return resp;
     }
 
     return json({ ok: false, message: "Not Found" }, 404);
@@ -594,6 +605,8 @@ async function invalidateStatusHtmlCache() {
   const urls = [
     "https://door-lock-monitor.irvinfly.workers.dev/status",
     "https://moztw.space/status",
+    "https://door-lock-monitor.irvinfly.workers.dev/api",
+    "https://moztw.space/api",
   ];
   await Promise.all(
     urls.map((u) =>
