@@ -5,6 +5,8 @@ const LOGIN_URL_DEFAULT = "https://biz.candyhouse.co/login";
 const LOCK_STATUS_SELECTOR_DEFAULT = 'li:has-text("工寮 Open Sensor")';
 const DEFAULT_CLOSED_REGEX = "(Closed)";
 const DEFAULT_OPEN_REGEX = "(Open)";
+const RELOGIN_REQUIRED_TELEGRAM_MESSAGE = "門鎖監控需要重新登入，請重新匯入 session";
+const RELOGIN_REQUIRED_ERROR_MESSAGE = "需要重新登入：目前網址為 /login";
 
 function renderStatusHtml(status) {
   return `<!doctype html>
@@ -283,9 +285,12 @@ async function runMonitor(env, ctx) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await markRunFail(env, msg);
+    const telegramErrorText = isReloginRequiredError(msg)
+      ? RELOGIN_REQUIRED_TELEGRAM_MESSAGE
+      : `門鎖監控錯誤：${msg}`;
     // 只在錯誤訊息與上次通知不同時才發送 Telegram，避免 cron 重複洗版
-    if (await shouldNotifyError(env, msg)) {
-      await sendTelegram(env, `門鎖監控錯誤：${msg}`);
+    if (await shouldNotifyError(env, telegramErrorText)) {
+      await sendTelegram(env, telegramErrorText);
     }
     throw err;
   } finally {
@@ -299,71 +304,101 @@ async function runMonitor(env, ctx) {
 
 async function fetchLockStatusWithSessionOnly(env) {
   await saveRunStage(env, "browser_launch");
+  const maxAttempts = Math.max(1, Number(env.BROWSER_INIT_RETRY || 3));
+  const initTimeoutMs = Math.max(5000, Number(env.BROWSER_INIT_TIMEOUT_MS || 30000));
+  let lastError;
 
-  const browser = await launch(env.MYBROWSER);
-  const context = await browser.newContext();
-  await restoreSessionCookies(context, env);
-  const page = await context.newPage();
-
-   // 還原 localStorage（若有）
-  const rawStorage = await env.LOCK_STATE.get("session_local_storage");
-  if (rawStorage) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let browser;
     try {
-      const items = JSON.parse(rawStorage);
-      if (Array.isArray(items) && items.length > 0) {
-        await page.addInitScript((entries) => {
-          try {
-            for (const { key, value } of entries) {
-              if (typeof key === "string" && typeof value === "string") {
-                localStorage.setItem(key, value);
+      await saveRunStage(env, `browser_launch_attempt_${attempt}`);
+      browser = await withTimeout(
+        launch(env.MYBROWSER),
+        initTimeoutMs,
+        `browser launch timeout (${initTimeoutMs}ms)`,
+      );
+      const context = await withTimeout(
+        browser.newContext(),
+        initTimeoutMs,
+        `browser newContext timeout (${initTimeoutMs}ms)`,
+      );
+      await restoreSessionCookies(context, env);
+      const page = await withTimeout(
+        context.newPage(),
+        initTimeoutMs,
+        `browser newPage timeout (${initTimeoutMs}ms)`,
+      );
+
+      // 還原 localStorage（若有）
+      const rawStorage = await env.LOCK_STATE.get("session_local_storage");
+      if (rawStorage) {
+        try {
+          const items = JSON.parse(rawStorage);
+          if (Array.isArray(items) && items.length > 0) {
+            await page.addInitScript((entries) => {
+              try {
+                for (const { key, value } of entries) {
+                  if (typeof key === "string" && typeof value === "string") {
+                    localStorage.setItem(key, value);
+                  }
+                }
+              } catch {
+                // 忽略 localStorage 還原錯誤，繼續後續流程
               }
-            }
-          } catch {
-            // 忽略 localStorage 還原錯誤，繼續後續流程
+            }, items);
           }
-        }, items);
+        } catch {
+          // 忽略解析錯誤
+        }
       }
-    } catch {
-      // 忽略解析錯誤
+
+      await saveRunStage(env, "open_status_page");
+      await page.goto(STATUS_URL_DEFAULT, { waitUntil: "domcontentloaded" });
+      await ensureNotOnLoginPage(page);
+      if (env.STATUS_READY_SELECTOR) {
+        await saveRunStage(env, "wait_status_ready_selector");
+        await waitForAnySelector(
+          page,
+          [env.STATUS_READY_SELECTOR],
+          "狀態頁 ready selector",
+          Number(env.STATUS_READY_TIMEOUT_MS || 15000)
+        );
+      }
+      // 等待實際狀態元素出現（與 local-test.js 對齊）
+      const lockSelector = env.LOCK_STATUS_SELECTOR || LOCK_STATUS_SELECTOR_DEFAULT;
+      if (lockSelector) {
+        await saveRunStage(env, "wait_lock_status_selector");
+        await waitForAnySelector(
+          page,
+          [lockSelector],
+          "lock status 元素",
+          Number(env.STATUS_READY_TIMEOUT_MS || 15000)
+        );
+      }
+      await ensureNotOnLoginPage(page);
+      await saveRunStage(env, "read_status_text");
+      const rawStatus = await readRawStatus(page);
+      await env.LOCK_STATE.put("last_raw_status", rawStatus ?? "");
+      const status = normalizeStatus(rawStatus);
+      await persistSessionCookies(context, env);
+      await saveRunStage(env, `status=${status}`);
+      return status;
+    } catch (err) {
+      lastError = err;
+      const retryable = isRetryableBrowserInitError(err);
+      if (!retryable || attempt >= maxAttempts) {
+        throw err;
+      }
+      await saveRunStage(env, `browser_init_retry_${attempt}`);
+      await sleep(800 * attempt);
+    } finally {
+      if (browser) {
+        await browser.close().catch(() => {});
+      }
     }
   }
 
-  try {
-    await saveRunStage(env, "open_status_page");
-    await page.goto(STATUS_URL_DEFAULT, { waitUntil: "domcontentloaded" });
-    if (env.STATUS_READY_SELECTOR) {
-      await saveRunStage(env, "wait_status_ready_selector");
-      await waitForAnySelector(
-        page,
-        [env.STATUS_READY_SELECTOR],
-        "狀態頁 ready selector",
-        Number(env.STATUS_READY_TIMEOUT_MS || 15000)
-      );
-    }
-    // 等待實際狀態元素出現（與 local-test.js 對齊）
-    const lockSelector = env.LOCK_STATUS_SELECTOR || LOCK_STATUS_SELECTOR_DEFAULT;
-    if (lockSelector) {
-      await saveRunStage(env, "wait_lock_status_selector");
-      await waitForAnySelector(
-        page,
-        [lockSelector],
-        "lock status 元素",
-        Number(env.STATUS_READY_TIMEOUT_MS || 15000)
-      );
-    }
-    await ensureNotOnLoginPage(page);
-    await saveRunStage(env, "read_status_text");
-    const rawStatus = await readRawStatus(page);
-    await env.LOCK_STATE.put("last_raw_status", rawStatus ?? "");
-    const status = normalizeStatus(rawStatus);
-    await persistSessionCookies(context, env);
-    await saveRunStage(env, `status=${status}`);
-    return status;
-  } catch (err) {
-    throw err;
-  } finally {
-    await browser.close();
-  }
+  throw lastError || new Error("browser initialization failed");
 }
 
 function normalizeStatus(rawStatus) {
@@ -458,19 +493,25 @@ async function waitForAnySelector(page, selectors, fieldName, timeoutMs) {
 }
 
 async function ensureNotOnLoginPage(page) {
-  if (isLoginUrl(page.url(), LOGIN_URL_DEFAULT)) {
-    throw new Error("目前仍在登入頁，未成功進入狀態頁");
+  const currentUrl = page.url();
+  if (isBizLoginPath(currentUrl)) {
+    throw new Error(RELOGIN_REQUIRED_ERROR_MESSAGE);
   }
 }
 
-function isLoginUrl(currentUrl, loginUrl) {
+function isReloginRequiredError(message) {
+  return String(message || "").includes(RELOGIN_REQUIRED_ERROR_MESSAGE);
+}
+
+/** biz.candyhouse.co 且 path 為 /login（與 LOGIN_URL_DEFAULT 對齊） */
+function isBizLoginPath(currentUrl) {
   try {
-    const loginPath = new URL(loginUrl).pathname || "/login";
-    const currentPath = new URL(currentUrl).pathname || "";
-    if (!loginPath || loginPath === "/") return currentPath.includes("/login");
-    return currentPath === loginPath || currentPath.includes("/login");
+    const u = new URL(currentUrl);
+    const expected = new URL(LOGIN_URL_DEFAULT);
+    if (u.hostname !== expected.hostname) return false;
+    return u.pathname === "/login" || u.pathname === expected.pathname;
   } catch {
-    return currentUrl.includes("/login");
+    return false;
   }
 }
 
@@ -564,6 +605,35 @@ async function shouldNotifyError(env, msg) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(label));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+function isRetryableBrowserInitError(err) {
+  const msg = err instanceof Error ? err.message : String(err || "");
+  const text = msg.toLowerCase();
+  return (
+    text.includes("target page, context or browser has been closed") ||
+    text.includes("browser has been closed") ||
+    text.includes("browser has disconnected") ||
+    text.includes("browser launch timeout") ||
+    text.includes("browser newcontext timeout") ||
+    text.includes("browser newpage timeout")
+  );
 }
 
 function json(data, status = 200) {
