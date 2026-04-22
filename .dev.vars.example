@@ -1,2 +1,2 @@
-LOGIN_EMAIL="your-lock-email@example.com"
+# 匯入 session 時 POST 的目標（選用）。未設定時 local-test.js 預設為 http://localhost:8787/import-session
 SESSION_IMPORT_URL="http://localhost:8787/import-session"

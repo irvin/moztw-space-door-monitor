@@ -11,9 +11,11 @@
   - `session_local_storage`：登入後的 localStorage key/value
   - `last_status`：上一次成功讀到的狀態（`OPEN` / `CLOSED`）
   - `last_run_*`：最近一次執行的時間與結果
-- `Telegram Bot API`: 當狀態變化時發訊息到群組：
-  - `OPEN` → `工寮現在開門中`
-  - `CLOSED` → `工寮現在已關門`
+- `Telegram Bot API`: 發訊息到群組，包含：
+  - 狀態變化：`OPEN` → `工寮大門：已開啟`，`CLOSED` → `工寮大門：已關閉`（僅在 `last_status` 變更時發送，避免重複洗版）
+  - 監控曾失敗後恢復成功：先發 `門鎖監控已恢復正常`，再依上列規則處理開關門訊息
+  - 一般錯誤：`門鎖監控錯誤：…`（同一錯誤訊息只通知一次，直到下次成功執行）
+  - Session 失效且瀏覽器落在 `https://biz.candyhouse.co/login`：`門鎖監控需要重新登入，請重新匯入 session`
 
 ## 先決條件
 
@@ -24,40 +26,35 @@
 
 ### 一次性前置步驟：建立「已登入的 session」
 
-整個系統的「登入」只透過本機瀏覽器完成一次，然後由腳本自動把 session 上傳到 Cloudflare：
+整個系統的「登入」只透過本機瀏覽器完成一次，然後由 `local-test.js` 把 session 上傳到 Cloudflare：
 
-1. 編輯 `.dev.vars`：
-   - `LOGIN_EMAIL`：登入用 email
-   - `SESSION_IMPORT_URL`：登入完成後，把 session 上傳到哪個 `/import-session`（例如正式 Worker）
-2. 在本機執行：
+1. 編輯 `.dev.vars`（可參考 `.dev.vars.example`）：
+   - `SESSION_IMPORT_URL`（選用）：登入完成後要把 session POST 到哪個 `/import-session`。未設定時預設為本機 `http://localhost:8787/import-session`（須先 `npm run dev`）。
+2. 在本機執行（本機 dev 匯入）：
    ```bash
    npm run local:test
    ```
-   - 這會開一個本機瀏覽器，流程：
-     - 自動開 `LOGIN_URL`、填入 `LOGIN_EMAIL`、按「發送驗證碼」。
-     - 等你在終端機輸入 Email 收到的 4 碼 OTP。
-     - 自動填入 OTP、等待跳轉到狀態頁。
-     - 等到「工寮 Open Sensor」那一行出現後，讀出當下狀態（`OPEN` / `CLOSED`）。
-     - 讀取登入後的 cookies + localStorage，呼叫 `/import-session` 將這份 session 傳給 Worker。
+   - 會開啟本機瀏覽器到 Candy House 登入頁，**請你在瀏覽器內手動完成登入**（含收驗證碼等），直到畫面上出現「工寮 Open Sensor」那一列。
+   - 回到終端機按 Enter 後，腳本會讀取該列狀態文字、匯出 cookies + `localStorage`，並 `POST` 到 `SESSION_IMPORT_URL`（或上述預設本機位址）。
 3. 若 `SESSION_IMPORT_URL` 未設定，`local-test.js` 會預設把 session 傳到本機 dev：
    - `http://localhost:8787/import-session`（搭配 `npm run dev` 使用）。
-4. 若你想直接把 session 上傳到正式 Worker，可使用：
+4. 若你想直接把 session 上傳到正式 Worker，請使用：
    ```bash
    npm run local:test:prod
    ```
-   - 這個 script 會把 session 傳到：
+   - 此指令會把 `SESSION_IMPORT_URL` 設為：
      - `https://door-lock-monitor.irvinfly.workers.dev/import-session`
-   - 也就是「本機登入 → 把 cookies + localStorage 上傳到正式 Cloudflare Worker」。
+   - 流程同上：本機瀏覽器手動登入 → 按 Enter → 上傳 cookies + `localStorage` 到正式 Worker。
 5. 之後 Worker 每次執行時會：
    - 從 KV 拿出 `session_cookies` + `session_local_storage`，還原到 Browser Rendering 環境。
-   - 直接開 `STATUS_URL` 讀取狀態，不再自動走 OTP 流程。
+   - 直接開狀態頁讀取門鎖文字，**不再**於 Worker 內自動走 OTP 登入流程。
 
 ## 本地開發與測試
 
 ```bash
 npm install
 cp .dev.vars.example .dev.vars
-# 編輯 `.dev.vars`（登入 EMAIL、SESSION_IMPORT_URL 等）
+# 編輯 `.dev.vars`（選用：自訂 SESSION_IMPORT_URL；未設定則匯入本機；`npm run local:test:prod` 會固定指向正式 import）
 
 # 啟動本機開發（使用 Cloudflare 的 Browser Rendering + 遠端 KV）
 npm run dev
@@ -84,22 +81,25 @@ curl http://localhost:8787/status
    wrangler secret put TELEGRAM_CHAT_ID
    ```
 4. 部署：
-```bash
-npm run deploy
-```
 
-> 備註：如果未來 session 失效，Worker 會在讀取狀態頁時失敗，你只要重新登入一次、再匯入新的 cookies 即可。
+   ```bash
+   npm run deploy
+   ```
+
+> 備註：若 session 失效，Worker 可能讀不到狀態或導向登入頁（網址為 `/login` 時會透過 Telegram 提示需重新匯入 session）。請再執行一次 `npm run local:test` 或 `npm run local:test:prod` 完成手動登入並上傳新的 cookies。
 
 ## Telegram 設定
 
 1. 用 `@BotFather` 建立 bot，拿到 token。
 2. 把 bot 加入你的群組。
 3. 先在群組發一則訊息給 bot。
-4. 呼叫：
-```bash
-https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
-```
-從回傳中的 `chat.id` 取得群組 id（通常是 `-100...`）。
+4. 取得群組 `chat.id`（先讓 bot 在群組收到至少一則訊息後再呼叫）：
+
+   ```bash
+   curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
+   ```
+
+   從回傳中的 `chat.id` 取得群組 id（通常是 `-100...`）。
 
 ## 狀態查詢與通知行為
 
@@ -123,16 +123,17 @@ https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
   - 每 10 分鐘由 Cloudflare cron 自動呼叫 `scheduled`，執行與 `run` 相同的監控流程。
 - **Telegram 通知規則**
   - 第一次成功讀到狀態時：
-    - `OPEN` → 發送 `工寮現在開門中`
-    - `CLOSED` → 發送 `工寮現在已關門`
+    - `OPEN` → 發送 `工寮大門：已開啟`
+    - `CLOSED` → 發送 `工寮大門：已關閉`
   - 之後每次執行只要 `last_status` 與前一次不同時，才會再發送一次對應訊息（不重複刷同一個狀態）。
+  - 若前一輪曾發送過錯誤通知，下一輪成功時會先發 `門鎖監控已恢復正常`，再依狀態變更規則處理開關門訊息。
 
 ## 重要注意
 
-- 你必須把 selector 換成你的實際頁面（`EMAIL_INPUT_SELECTOR` / `LOCK_STATUS_SELECTOR` 等）。
-- 如果你看到的 HTML 只有 `<div id="root"></div>`，代表是 SPA；請用瀏覽器開頁後用 DevTools 檢查「渲染後」DOM 再填 selector。
-- 如果頁面有防 bot / CAPTCHA，這個方案可能需要人工介入。
-- 若登入後 session 可以維持，可透過 `npm run local:test:prod` 不定期更新 session，減少手動處理登入的頻率。
+- Worker 預設以 `li:has-text("工寮 Open Sensor")` 鎖定狀態列；若 Candy House 介面改版，可在 Worker 環境變數設定 `LOCK_STATUS_SELECTOR` 覆寫。
+- `local-test.js` 使用與 Worker 對齊的 selector；本機除錯時請用 DevTools 確認「渲染後」DOM 再調整。
+- 若頁面有防 bot / CAPTCHA，本機手動登入仍適用；Worker 端無法自動完成互動式驗證。
+- 建議不定期執行 `npm run local:test:prod` 更新 session，減少遠端讀取失敗。
 
 ## 主要檔案
 
