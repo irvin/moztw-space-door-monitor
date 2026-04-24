@@ -75,7 +75,7 @@ curl http://localhost:8787/status
    [vars]
    TELEGRAM_ENABLED = "true"
    ```
-   開關門公告預設會發到 `@moztw_general`；若要改到其他頻道，可設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`。
+   若要啟用「開關門公告 + 頻道標題更新」，需設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`（未設定時會略過該功能，並通知 `TELEGRAM_CHAT_ID`）。
 3. 第一次部署前，需使用 `wrangler secret put` 設定敏感資訊，例如：
    ```bash
    wrangler secret put TELEGRAM_BOT_TOKEN
@@ -101,7 +101,7 @@ curl http://localhost:8787/status
    ```
 
    從回傳中的 `chat.id` 取得群組 id（通常是 `-100...`）。
-5. 若要發送開關門公告到 `@moztw_general`，bot 需已加入該頻道，且具有發訊息與修改頻道資訊的管理員權限。
+5. 若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，bot 需已加入該目標頻道/群組，且具有發訊息與修改頻道資訊（`setChatTitle`）的管理員權限。
 
 ## 狀態查詢與通知行為
 
@@ -128,8 +128,9 @@ curl http://localhost:8787/status
     - `OPEN` → 發送 `工寮大門：已開啟`
     - `CLOSED` → 發送 `工寮大門：已關閉`
   - 之後每次執行只要 `last_status` 與前一次不同時，才會再發送一次對應訊息（不重複刷同一個狀態）。
-  - 當狀態在 `OPEN` 與 `CLOSED` 之間變化時，會另外發送公告到 `@moztw_general`，格式為 `#工寮開門 YYYY/MM/DD HH:mm:ss` 或 `#工寮關門 YYYY/MM/DD HH:mm:ss`（台北時間）。
-  - 開門時會把 `@moztw_general` 頻道標題改成 `Moz://TW（工寮開放中）`；關門時會改回 `Moz://TW`。
+  - 當狀態在 `OPEN` 與 `CLOSED` 之間變化時，若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會另外發送公告到該頻道/群組，格式為 `#工寮開門 YYYY/MM/DD HH:mm:ss` 或 `#工寮關門 YYYY/MM/DD HH:mm:ss`（台北時間）。
+  - 若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，開門時會把該頻道標題改成 `Moz://TW（工寮開放中）`；關門時會改回 `Moz://TW`。
+  - 若未設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會略過上述公告/改標題，並通知 `TELEGRAM_CHAT_ID` 缺少此變數。
   - 若前一輪曾發送過錯誤通知，下一輪成功時會先發 `門鎖監控已恢復正常`，再依狀態變更規則處理開關門訊息。
 
 ## 重要注意

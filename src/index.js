@@ -7,7 +7,6 @@ const DEFAULT_CLOSED_REGEX = "(Closed)";
 const DEFAULT_OPEN_REGEX = "(Open)";
 const RELOGIN_REQUIRED_TELEGRAM_MESSAGE = "門鎖監控需要重新登入，請重新匯入 session";
 const RELOGIN_REQUIRED_ERROR_MESSAGE = "需要重新登入：目前網址為 /login";
-const OPEN_ANNOUNCEMENT_CHANNEL_DEFAULT = "@moztw_general";
 const OPEN_ANNOUNCEMENT_CHANNEL_OPEN_TITLE = "Moz://TW（工寮開放中）";
 const OPEN_ANNOUNCEMENT_CHANNEL_CLOSED_TITLE = "Moz://TW";
 
@@ -298,12 +297,23 @@ async function runMonitor(env, ctx) {
         ctx.waitUntil(invalidateStatusHtmlCache());
       }
     } else if (prevStatus !== status) {
+      await env.LOCK_STATE.put("last_status", status);
       await sendTelegram(env, status === "OPEN" ? "工寮大門：已開啟" : "工寮大門：已關閉");
       if (status === "OPEN" || status === "CLOSED") {
-        await sendStatusAnnouncement(env, status, new Date());
-        await updateStatusAnnouncementChannelTitle(env, status);
+        try {
+          const channel = await getAnnouncementChannelOrNotify(env);
+          if (channel) {
+            await sendStatusAnnouncement(env, status, new Date(), channel);
+            await updateStatusAnnouncementChannelTitle(env, status, channel);
+          }
+        } catch (announcementError) {
+          const msg =
+            announcementError instanceof Error
+              ? announcementError.message
+              : String(announcementError);
+          await sendTelegram(env, `開關門公告發送失敗：${msg}`);
+        }
       }
-      await env.LOCK_STATE.put("last_status", status);
       if (ctx) {
         ctx.waitUntil(invalidateStatusHtmlCache());
       }
@@ -454,20 +464,28 @@ async function sendTelegram(env, text) {
   return sendTelegramToChat(env, env.TELEGRAM_CHAT_ID, text);
 }
 
-async function sendStatusAnnouncement(env, status, date) {
-  const channel = env.TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID || OPEN_ANNOUNCEMENT_CHANNEL_DEFAULT;
+async function sendStatusAnnouncement(env, status, date, channel) {
   const tag = status === "OPEN" ? "#工寮開門" : "#工寮關門";
   const text = `${tag} ${formatTaipeiDateTime(date)}`;
   return sendTelegramToChat(env, channel, text);
 }
 
-async function updateStatusAnnouncementChannelTitle(env, status) {
-  const channel = env.TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID || OPEN_ANNOUNCEMENT_CHANNEL_DEFAULT;
+async function updateStatusAnnouncementChannelTitle(env, status, channel) {
   const title =
     status === "OPEN"
       ? OPEN_ANNOUNCEMENT_CHANNEL_OPEN_TITLE
       : OPEN_ANNOUNCEMENT_CHANNEL_CLOSED_TITLE;
   return setTelegramChatTitle(env, channel, title);
+}
+
+async function getAnnouncementChannelOrNotify(env) {
+  const channel = String(env.TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID || "").trim();
+  if (channel) return channel;
+  await sendTelegram(
+    env,
+    "未設定 TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID，已略過開關門公告與頻道標題更新。"
+  );
+  return null;
 }
 
 async function sendTelegramToChat(env, chatId, text) {
