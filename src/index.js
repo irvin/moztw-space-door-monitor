@@ -7,6 +7,9 @@ const DEFAULT_CLOSED_REGEX = "(Closed)";
 const DEFAULT_OPEN_REGEX = "(Open)";
 const RELOGIN_REQUIRED_TELEGRAM_MESSAGE = "門鎖監控需要重新登入，請重新匯入 session";
 const RELOGIN_REQUIRED_ERROR_MESSAGE = "需要重新登入：目前網址為 /login";
+const OPEN_ANNOUNCEMENT_CHANNEL_DEFAULT = "@moztw_general";
+const OPEN_ANNOUNCEMENT_CHANNEL_OPEN_TITLE = "Moz://TW（工寮開放中）";
+const OPEN_ANNOUNCEMENT_CHANNEL_CLOSED_TITLE = "Moz://TW";
 
 function renderStatusHtml(status) {
   return `<!doctype html>
@@ -295,8 +298,12 @@ async function runMonitor(env, ctx) {
         ctx.waitUntil(invalidateStatusHtmlCache());
       }
     } else if (prevStatus !== status) {
-      await env.LOCK_STATE.put("last_status", status);
       await sendTelegram(env, status === "OPEN" ? "工寮大門：已開啟" : "工寮大門：已關閉");
+      if (status === "OPEN" || status === "CLOSED") {
+        await sendStatusAnnouncement(env, status, new Date());
+        await updateStatusAnnouncementChannelTitle(env, status);
+      }
+      await env.LOCK_STATE.put("last_status", status);
       if (ctx) {
         ctx.waitUntil(invalidateStatusHtmlCache());
       }
@@ -444,10 +451,30 @@ function normalizeStatus(rawStatus) {
 }
 
 async function sendTelegram(env, text) {
+  return sendTelegramToChat(env, env.TELEGRAM_CHAT_ID, text);
+}
+
+async function sendStatusAnnouncement(env, status, date) {
+  const channel = env.TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID || OPEN_ANNOUNCEMENT_CHANNEL_DEFAULT;
+  const tag = status === "OPEN" ? "#工寮開門" : "#工寮關門";
+  const text = `${tag} ${formatTaipeiDateTime(date)}`;
+  return sendTelegramToChat(env, channel, text);
+}
+
+async function updateStatusAnnouncementChannelTitle(env, status) {
+  const channel = env.TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID || OPEN_ANNOUNCEMENT_CHANNEL_DEFAULT;
+  const title =
+    status === "OPEN"
+      ? OPEN_ANNOUNCEMENT_CHANNEL_OPEN_TITLE
+      : OPEN_ANNOUNCEMENT_CHANNEL_CLOSED_TITLE;
+  return setTelegramChatTitle(env, channel, title);
+}
+
+async function sendTelegramToChat(env, chatId, text) {
   if (String(env.TELEGRAM_ENABLED || "true").toLowerCase() !== "true") {
     return;
   }
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+  if (!env.TELEGRAM_BOT_TOKEN || !chatId) {
     return;
   }
 
@@ -456,7 +483,7 @@ async function sendTelegram(env, text) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      chat_id: env.TELEGRAM_CHAT_ID,
+      chat_id: chatId,
       text,
       disable_web_page_preview: true,
     }),
@@ -466,6 +493,45 @@ async function sendTelegram(env, text) {
     const body = await resp.text();
     throw new Error(`Telegram 發送失敗: ${resp.status} ${body}`);
   }
+}
+
+async function setTelegramChatTitle(env, chatId, title) {
+  if (String(env.TELEGRAM_ENABLED || "true").toLowerCase() !== "true") {
+    return;
+  }
+  if (!env.TELEGRAM_BOT_TOKEN || !chatId) {
+    return;
+  }
+
+  const api = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setChatTitle`;
+  const resp = await fetch(api, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      title,
+    }),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Telegram 頻道標題更新失敗: ${resp.status} ${body}`);
+  }
+}
+
+function formatTaipeiDateTime(date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}/${value.month}/${value.day} ${value.hour}:${value.minute}:${value.second}`;
 }
 
 async function readRawStatus(page) {
