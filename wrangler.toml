@@ -7,8 +7,8 @@ compatibility_flags = ["nodejs_compat"]
 cpu_ms = 500
 
 routes = [
-  { pattern = "moztw.space/status*", zone_name = "moztw.space" },
-  { pattern = "moztw.space/api*", zone_name = "moztw.space" },
+  { pattern = "moztw.space/status", zone_name = "moztw.space" },
+  { pattern = "moztw.space/api", zone_name = "moztw.space" },
 ]
 
 [triggers]
@@ -23,6 +23,7 @@ binding = "MYBROWSER"
 
 [vars]
 TELEGRAM_ENABLED = "true"        # 或 "false" 視你要不要開通知
+TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID = "@moztw_general"
 
 [observability]
 enabled = false
