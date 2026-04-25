@@ -128,7 +128,7 @@ curl http://localhost:8787/status
     - `OPEN` → 發送 `工寮大門：已開啟`
     - `CLOSED` → 發送 `工寮大門：已關閉`
   - 之後每次執行只要 `last_status` 與前一次不同時，才會再發送一次對應訊息（不重複刷同一個狀態）。
-  - 當狀態在 `OPEN` 與 `CLOSED` 之間變化時，若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會另外發送公告到該頻道/群組的 `message_thread_id=258883`，格式為 `#工寮開門 YYYY/MM/DD HH:mm:ss` 或 `#工寮關門 YYYY/MM/DD HH:mm:ss`（台北時間）。
+  - 當狀態在 `OPEN` 與 `CLOSED` 之間變化時，若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會另外發送公告到該頻道/群組，格式為 `#工寮開門 YYYY/MM/DD HH:mm:ss` 或 `#工寮關門 YYYY/MM/DD HH:mm:ss`（台北時間）。
   - 若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，開門時會把該頻道標題改成 `Moz://TW（工寮開放中）`；關門時會改回 `Moz://TW`。
   - 若未設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會略過上述公告/改標題，並通知 `TELEGRAM_CHAT_ID` 缺少此變數。
   - 若前一輪曾發送過錯誤通知，下一輪成功時會先發 `門鎖監控已恢復正常`，再依狀態變更規則處理開關門訊息。
