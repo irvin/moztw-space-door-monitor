@@ -9,8 +9,11 @@
 - `KV (LOCK_STATE)`: 保存
   - `session_cookies`：登入後的 cookies
   - `session_local_storage`：登入後的 localStorage key/value
-  - `last_status`：上一次成功讀到的狀態（`OPEN` / `CLOSED`）
-  - `last_run_*`：最近一次執行的時間與結果
+  - `last_status`：上一次成功讀到的狀態（`OPEN` / `CLOSED`；解析失敗時可能為 `UNKNOWN(...)` 字串）
+  - `last_raw_status`：上一輪讀到的原始狀態列文字
+  - `last_run_*`：最近一次執行的時間、階段（`last_run_stage`）、成敗與錯誤訊息
+  - `last_error_notified`：已透過 Telegram 通知過的錯誤內文（去重用）
+  - `active_run_id` / `active_run_started_at`：執行中標記（供除錯／觀察）
   - `monitoring_mode`：一般為 `normal`；手動開門隔離感測時為 `manual_open_muted`
   - `manual_mode_changed_at`：最近一次切換監控模式的時間（ISO 字串）
 - `Telegram Bot API`: 發訊息到群組，包含：
@@ -77,13 +80,22 @@ curl http://localhost:8787/status
    [vars]
    TELEGRAM_ENABLED = "true"
    ```
-   若要啟用「開關門公告 + 頻道標題更新」，需設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`（未設定時會略過該功能，並通知 `TELEGRAM_CHAT_ID`）。
+   若要啟用「開關門公告 + 頻道標題更新」，需設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`（未設定時會略過該功能，並對主群組 `TELEGRAM_CHAT_ID` 發送說明訊息）。
 3. 第一次部署前，需使用 `wrangler secret put` 設定敏感資訊，例如：
    ```bash
    wrangler secret put TELEGRAM_BOT_TOKEN
    wrangler secret put TELEGRAM_CHAT_ID
+   wrangler secret put TELEGRAM_WEBHOOK_SECRET
    ```
-4. 部署：
+   - `TELEGRAM_WEBHOOK_SECRET`：須與 `setWebhook` 時的 `secret_token` 相同；Worker 以標頭 `X-Telegram-Bot-Api-Secret-Token` 驗證 `POST /telegram-webhook`。
+   - `TELEGRAM_BOT_USERNAME`：已在 `wrangler.toml` 的 `[vars]`（或本機 `.dev.vars`）設定，供群組內 `/manual_open@…`、`/manual_close@…` 比對 bot 後綴。
+4. **Webhook**：正式路由見 `wrangler.toml`（例如 `https://moztw.space/telegram-webhook`）。設定範例：
+   ```bash
+   curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
+     -H "Content-Type: application/json" \
+     -d '{"url":"https://moztw.space/telegram-webhook","secret_token":"<與 TELEGRAM_WEBHOOK_SECRET 相同>"}'
+   ```
+5. 部署：
 
    ```bash
    npm run deploy
@@ -103,7 +115,26 @@ curl http://localhost:8787/status
    ```
 
    從回傳中的 `chat.id` 取得群組 id（通常是 `-100...`）。
-5. 若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，bot 需已加入該目標頻道/群組，且具有發訊息與修改頻道資訊（`setChatTitle`）的管理員權限。
+
+   若出現 **409 Conflict**（`can't use getUpdates while webhook is active`），代表 bot 已設 webhook，需先呼叫 `deleteWebhook` 再 `getUpdates`，查完後再設回 webhook；或改用其他方式取得群組 id（例如專用 bot）。
+5. 群組內手動開關門：在已設定的 `TELEGRAM_CHAT_ID` 群組傳送  
+   `/manual_open@<TELEGRAM_BOT_USERNAME>`、`/manual_close@<TELEGRAM_BOT_USERNAME>`（`TELEGRAM_BOT_USERNAME` 不含 `@`，與 `wrangler.toml` 一致）。
+6. （選用）只在特定群組顯示 `/` 指令選單：對該群組呼叫 Bot API `setMyCommands`，`scope` 使用 `{"type":"chat","chat_id":<群組數字 id>}`。
+7. 若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，bot 需已加入該目標頻道/群組，且具有發訊息與修改頻道資訊（`setChatTitle`）的管理員權限。
+
+## HTTP 端點（摘要）
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/health` | 健康檢查 JSON |
+| GET | `/` | 門鎖狀態 HTML（與 `/status` 類似） |
+| GET | `/status` | JSON 狀態；`Accept: text/html` 時回 HTML（可快取） |
+| GET | `/api` | 對外 Space API（含 `state.open` 等），見程式內欄位 |
+| POST | `/run` | 手動執行一輪監控 |
+| POST | `/import-session` | 寫入 KV 的 session（由 `local-test.js` 使用） |
+| POST | `/telegram-webhook` | Telegram 更新（需正確 `secret_token` 標頭） |
+
+自訂網域：`wrangler.toml` 已將 `moztw.space/status`、`/api`、`/telegram-webhook` 指到此 Worker；本機預設仍為 `http://localhost:8787/...`。
 
 ## 狀態查詢與通知行為
 
@@ -114,7 +145,7 @@ curl http://localhost:8787/status
     curl -X POST http://localhost:8787/run
     curl http://localhost:8787/status
 
-    # 正式
+    # 正式（亦可用自訂網域，例如 https://moztw.space/status）
     curl -X POST "https://door-lock-monitor.irvinfly.workers.dev/run"
     curl "https://door-lock-monitor.irvinfly.workers.dev/status"
     ```
@@ -137,12 +168,13 @@ curl http://localhost:8787/status
   - 當狀態在 `OPEN` 與 `CLOSED` 之間變化時，若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會另外發送公告到該頻道/群組；**自動感測**格式為 `#工寮開門 YYYY/MM/DD HH:mm:ss（by 大門感應器）` 或 `#工寮關門 …（by 大門感應器）`（台北時間）。
   - 若以 Telegram 指令**手動開門**或**手動關門**（Webhook），同一公告頻道會改為 `#工寮開門 YYYY/MM/DD HH:mm:ss（by @username）` 或 `#工寮關門 YYYY/MM/DD HH:mm:ss（by @username）`；`username` 為下指令者的 Telegram 使用者名稱（若未設定則改為顯示名稱或 `user_<id>`）。
   - 若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，開門時會把該頻道標題改成 `Moz://TW（工寮開放中）`；關門時會改回 `Moz://TW`。
-  - 若未設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會略過上述公告/改標題，並通知 `TELEGRAM_CHAT_ID` 缺少此變數。
+  - 若未設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會略過上述公告/改標題，並對主群組（`TELEGRAM_CHAT_ID`）發送說明：未設定該變數故略過公告與標題更新。
   - 若前一輪曾發送過錯誤通知，下一輪成功時會先發 `門鎖監控已恢復正常`，再依狀態變更規則處理開關門訊息。
 
 ## 重要注意
 
 - Worker 預設以 `li:has-text("工寮 Open Sensor")` 鎖定狀態列；若 Candy House 介面改版，可在 Worker 環境變數設定 `LOCK_STATUS_SELECTOR` 覆寫。
+- 其他選用環境變數（`wrangler.toml` `[vars]` 或 Cloudflare 儀表板）：`STATUS_READY_SELECTOR`、`STATUS_READY_TIMEOUT_MS`（預設 15000）、`SESSION_COOKIE_TTL_SEC`（KV 寫入 TTL，預設 7 天）、`BROWSER_INIT_RETRY`、`BROWSER_INIT_TIMEOUT_MS`。
 - `local-test.js` 使用與 Worker 對齊的 selector；本機除錯時請用 DevTools 確認「渲染後」DOM 再調整。
 - 若頁面有防 bot / CAPTCHA，本機手動登入仍適用；Worker 端無法自動完成互動式驗證。
 - 建議不定期執行 `npm run local:test:prod` 更新 session，減少遠端讀取失敗。
@@ -152,3 +184,4 @@ curl http://localhost:8787/status
 - `src/index.js`: Worker 主程式（排程、監控、Telegram Webhook、通知）
 - `wrangler.toml`: Worker 綁定與 cron
 - `.dev.vars.example`: 環境變數範本
+- `.gitignore`: 忽略 `node_modules`、`.dev.vars` 等本機／敏感檔案
