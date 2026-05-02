@@ -11,6 +11,8 @@
   - `session_local_storage`：登入後的 localStorage key/value
   - `last_status`：上一次成功讀到的狀態（`OPEN` / `CLOSED`）
   - `last_run_*`：最近一次執行的時間與結果
+  - `monitoring_mode`：一般為 `normal`；手動開門隔離感測時為 `manual_open_muted`
+  - `manual_mode_changed_at`：最近一次切換監控模式的時間（ISO 字串）
 - `Telegram Bot API`: 發訊息到群組，包含：
   - 狀態變化：`OPEN` → `工寮大門：已開啟`，`CLOSED` → `工寮大門：已關閉`（僅在 `last_status` 變更時發送，避免重複洗版）
   - 監控曾失敗後恢復成功：先發 `門鎖監控已恢復正常`，再依上列規則處理開關門訊息
@@ -118,9 +120,13 @@ curl http://localhost:8787/status
     ```
   - `/status` 回傳重點欄位：
     - `last_status`: `"OPEN"` / `"CLOSED"`
+    - `monitoring_mode`: `"normal"` 或 `"manual_open_muted"`
+    - `sensor_muted`: 是否為感測隔離（布林，與 `monitoring_mode` 一致）
+    - `manual_mode_changed_at`: 最近一次切換監控模式時間（若有）
     - `last_run_started_at_iso`: 上次啟動時間（ISO）
     - `last_run_finished_at_iso`: 上次結束時間（ISO）
     - `last_run_ok`: `"1"` 表示成功，`"0"` 表示失敗
+    - 隔離期間最近一次執行的 `last_run_stage` 可能為 `skipped_sensor_muted`（略過瀏覽器）
 - **排程行為**
   - 每 10 分鐘由 Cloudflare cron 自動呼叫 `scheduled`，執行與 `run` 相同的監控流程。
 - **Telegram 通知規則**
@@ -128,7 +134,8 @@ curl http://localhost:8787/status
     - `OPEN` → 發送 `工寮大門：已開啟`
     - `CLOSED` → 發送 `工寮大門：已關閉`
   - 之後每次執行只要 `last_status` 與前一次不同時，才會再發送一次對應訊息（不重複刷同一個狀態）。
-  - 當狀態在 `OPEN` 與 `CLOSED` 之間變化時，若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會另外發送公告到該頻道/群組，格式為 `#工寮開門 YYYY/MM/DD HH:mm:ss` 或 `#工寮關門 YYYY/MM/DD HH:mm:ss`（台北時間）。
+  - 當狀態在 `OPEN` 與 `CLOSED` 之間變化時，若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會另外發送公告到該頻道/群組；**自動感測**格式為 `#工寮開門 YYYY/MM/DD HH:mm:ss（by 大門感應器）` 或 `#工寮關門 …（by 大門感應器）`（台北時間）。
+  - 若以 Telegram 指令**手動開門**或**手動關門**（Webhook），同一公告頻道會改為 `#工寮開門 YYYY/MM/DD HH:mm:ss（by {@username}）` 或 `#工寮關門 YYYY/MM/DD HH:mm:ss（by {@username}）`；`username` 為下指令者的 Telegram 使用者名稱（若未設定則改為顯示名稱或 `user_<id>`）。
   - 若有設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，開門時會把該頻道標題改成 `Moz://TW（工寮開放中）`；關門時會改回 `Moz://TW`。
   - 若未設定 `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`，會略過上述公告/改標題，並通知 `TELEGRAM_CHAT_ID` 缺少此變數。
   - 若前一輪曾發送過錯誤通知，下一輪成功時會先發 `門鎖監控已恢復正常`，再依狀態變更規則處理開關門訊息。
@@ -142,6 +149,6 @@ curl http://localhost:8787/status
 
 ## 主要檔案
 
-- `src/index.js`: Worker 主程式（排程、監控、收信、通知）
+- `src/index.js`: Worker 主程式（排程、監控、Telegram Webhook、通知）
 - `wrangler.toml`: Worker 綁定與 cron
 - `.dev.vars.example`: 環境變數範本

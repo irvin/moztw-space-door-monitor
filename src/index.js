@@ -9,6 +9,11 @@ const RELOGIN_REQUIRED_TELEGRAM_MESSAGE = "門鎖監控需要重新登入，請�
 const RELOGIN_REQUIRED_ERROR_MESSAGE = "需要重新登入：目前網址為 /login";
 const OPEN_ANNOUNCEMENT_CHANNEL_OPEN_TITLE = "Moz://TW（工寮開放中）";
 const OPEN_ANNOUNCEMENT_CHANNEL_CLOSED_TITLE = "Moz://TW";
+/** 自動感測觸發之公告頻道訊息結尾（非手動指令） */
+const SENSOR_ANNOUNCEMENT_BYLINE = "（by 大門感應器）";
+
+const MONITORING_MODE_NORMAL = "normal";
+const MONITORING_MODE_MANUAL_OPEN_MUTED = "manual_open_muted";
 
 function renderStatusHtml(status) {
   return `<!doctype html>
@@ -29,11 +34,17 @@ function renderStatusHtml(status) {
     .value { font-size:14px; color:#e5e7eb; margin-top:4px; word-break:break-word; }
     .meta { margin-top:12px; font-size:12px; color:#9ca3af; }
     code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:11px; background:#020617; padding:2px 4px; border-radius:4px; }
+    .banner { margin-bottom:16px; padding:10px 12px; border-radius:10px; border:1px solid #ca8a04; background:#422006; color:#fde68a; font-size:13px; line-height:1.45; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Door Lock Monitor</h1>
+    ${
+      status.monitoring_mode === MONITORING_MODE_MANUAL_OPEN_MUTED
+        ? `<div class="banner">感測隔離中（手動開門）：Cron 與 /run 不會讀取網頁感測，請以 Telegram /manual_close 恢復。</div>`
+        : ""
+    }
     <div class="label">目前狀態</div>
     <div class="status ${
       status.last_status === "OPEN"
@@ -96,6 +107,207 @@ function renderStatusHtml(status) {
   </script>
 </body>
 </html>`;
+}
+
+async function getMonitoringMode(env) {
+  const v = await env.LOCK_STATE.get("monitoring_mode");
+  return v === MONITORING_MODE_MANUAL_OPEN_MUTED
+    ? MONITORING_MODE_MANUAL_OPEN_MUTED
+    : MONITORING_MODE_NORMAL;
+}
+
+/**
+ * 解析群組內 `/manual_open@Bot` 或 `/manual_close@Bot`（Bot 使用者名稱不含 @）。
+ * @returns {{ kind: "manual_open" | "manual_close" | null; wrongBot?: boolean }}
+ */
+function parseManualTelegramCommand(text, expectedBotUsername) {
+  const first = String(text || "").trim().split(/\n/)[0]?.trim() || "";
+  const lower = first.toLowerCase();
+  const openCmd = "/manual_open";
+  const closeCmd = "/manual_close";
+  let kind = null;
+  let rest = "";
+  if (lower.startsWith(openCmd.toLowerCase())) {
+    kind = "manual_open";
+    rest = first.slice(openCmd.length);
+  } else if (lower.startsWith(closeCmd.toLowerCase())) {
+    kind = "manual_close";
+    rest = first.slice(closeCmd.length);
+  } else {
+    return { kind: null };
+  }
+  if (rest === "") {
+    return { kind };
+  }
+  if (!rest.startsWith("@")) {
+    return { kind: null };
+  }
+  const suffix = rest.slice(1);
+  if (!/^[a-zA-Z0-9_]{5,32}$/.test(suffix)) {
+    return { kind: null };
+  }
+  const expected = String(expectedBotUsername || "").trim();
+  if (expected && suffix.toLowerCase() !== expected.toLowerCase()) {
+    return { kind: null, wrongBot: true };
+  }
+  return { kind };
+}
+
+async function handleTelegramWebhook(request, env, ctx) {
+  const secret = String(env.TELEGRAM_WEBHOOK_SECRET || "").trim();
+  if (!secret) {
+    return json({ ok: false, message: "TELEGRAM_WEBHOOK_SECRET 未設定" }, 503);
+  }
+  const header = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+  if (header !== secret) {
+    return new Response("Forbidden", { status: 403 });
+  }
+
+  const update = await request.json().catch(() => null);
+  if (!update || typeof update !== "object") {
+    return json({ ok: false, message: "invalid json" }, 400);
+  }
+
+  const message = update.message || update.edited_message;
+  if (!message || typeof message.text !== "string") {
+    return json({ ok: true });
+  }
+
+  const chatId = message.chat?.id;
+  const allowedChat = String(env.TELEGRAM_CHAT_ID || "").trim();
+  if (!allowedChat || String(chatId) !== allowedChat) {
+    return json({ ok: true });
+  }
+
+  const botUser = String(env.TELEGRAM_BOT_USERNAME || "").trim();
+  const parsed = parseManualTelegramCommand(message.text, botUser);
+  if (parsed.wrongBot) {
+    await sendTelegramToChat(
+      env,
+      allowedChat,
+      `請使用正確的 bot 後綴，例如 /manual_open@${botUser || "<bot_username>"}`,
+      { reply_to_message_id: message.message_id },
+    );
+    return json({ ok: true });
+  }
+  if (!parsed.kind) {
+    return json({ ok: true });
+  }
+
+  const replyOpts = { reply_to_message_id: message.message_id };
+
+  try {
+    if (parsed.kind === "manual_open") {
+      const mode = await getMonitoringMode(env);
+      if (mode === MONITORING_MODE_MANUAL_OPEN_MUTED) {
+        await sendTelegramToChat(
+          env,
+          allowedChat,
+          "目前已在手動開門（感測隔離）狀態。",
+          replyOpts,
+        );
+        return json({ ok: true });
+      }
+
+      await env.LOCK_STATE.put("monitoring_mode", MONITORING_MODE_MANUAL_OPEN_MUTED);
+      await env.LOCK_STATE.put("manual_mode_changed_at", new Date().toISOString());
+      await env.LOCK_STATE.put("last_status", "OPEN");
+
+      try {
+        const channel = await getAnnouncementChannelOrNotify(env);
+        if (channel) {
+          await sendManualDoorAnnouncement(
+            env,
+            "OPEN",
+            new Date(),
+            channel,
+            message.from,
+          );
+          await updateStatusAnnouncementChannelTitle(env, "OPEN", channel);
+        }
+      } catch (announcementError) {
+        const msg =
+          announcementError instanceof Error
+            ? announcementError.message
+            : String(announcementError);
+        await sendTelegram(env, `手動開門公告發送失敗：${msg}`);
+      }
+
+      const dt = formatTaipeiDateTime(new Date());
+      const closeHint = botUser ? `/manual_close@${botUser}` : "/manual_close";
+      const bodyText =
+        `#工寮開門 已於 ${dt} 送出開門資訊。\n\n` +
+        `關門時請記得點擊手動關門以恢復自動偵測\n` +
+        closeHint;
+
+      await sendTelegramToChat(env, allowedChat, bodyText, replyOpts);
+      if (ctx) {
+        ctx.waitUntil(invalidateStatusHtmlCache());
+      }
+      return json({ ok: true });
+    }
+
+    if (parsed.kind === "manual_close") {
+      const mode = await getMonitoringMode(env);
+      if (mode !== MONITORING_MODE_MANUAL_OPEN_MUTED) {
+        await sendTelegramToChat(
+          env,
+          allowedChat,
+          "目前並非手動開門隔離狀態。",
+          replyOpts,
+        );
+        return json({ ok: true });
+      }
+
+      await env.LOCK_STATE.put("monitoring_mode", MONITORING_MODE_NORMAL);
+      await env.LOCK_STATE.put("manual_mode_changed_at", new Date().toISOString());
+
+      try {
+        const channel = await getAnnouncementChannelOrNotify(env);
+        if (channel) {
+          await sendManualDoorAnnouncement(
+            env,
+            "CLOSED",
+            new Date(),
+            channel,
+            message.from,
+          );
+          await updateStatusAnnouncementChannelTitle(env, "CLOSED", channel);
+        }
+      } catch (announcementError) {
+        const msg =
+          announcementError instanceof Error
+            ? announcementError.message
+            : String(announcementError);
+        await sendTelegram(env, `手動關門公告發送失敗：${msg}`);
+      }
+
+      if (ctx) {
+        ctx.waitUntil(
+          runMonitor(env, ctx).catch(() => {
+            // 錯誤已由 runMonitor 內 Telegram 通知；webhook 仍回 200
+          }),
+        );
+        ctx.waitUntil(invalidateStatusHtmlCache());
+      }
+
+      await sendTelegramToChat(
+        env,
+        allowedChat,
+        "已恢復自動偵測，將依感測同步門鎖狀態。",
+        replyOpts,
+      );
+      return json({ ok: true });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await sendTelegramToChat(env, allowedChat, `指令處理失敗：${msg}`, replyOpts).catch(
+      () => {},
+    );
+    return json({ ok: false, error: msg }, 500);
+  }
+
+  return json({ ok: true });
 }
 
 export default {
@@ -204,8 +416,10 @@ export default {
           ? Math.floor(lastchangeMs / 1000)
           : undefined;
 
+      const sensorMuted = status.sensor_muted === true;
+
       const payload = {
-        api_compatibility: ["15"],
+        api_compatibility: ["15", "16"],
         space: "MozTW Space / Mozilla Community Space Taipei",
         logo: "https://moztw.org/space/images/logo.png",
         url: "https://moztw.space",
@@ -220,6 +434,7 @@ export default {
         state: {
           ...(typeof open === "boolean" ? { open } : {}),
           ...(lastchange ? { lastchange } : {}),
+          ...(sensorMuted ? { sensor_muted: true } : {}),
           icon: {
             open: "https://moztw.org/space/images/open.png",
             closed: "https://moztw.org/space/images/closed.png",
@@ -262,6 +477,10 @@ export default {
       return resp;
     }
 
+    if (url.pathname === "/telegram-webhook" && request.method === "POST") {
+      return handleTelegramWebhook(request, env, ctx);
+    }
+
     return json({ ok: false, message: "Not Found" }, 404);
   },
 
@@ -280,6 +499,17 @@ async function runMonitor(env, ctx) {
   ]);
 
   try {
+    const monitoringMode = await getMonitoringMode(env);
+    if (monitoringMode === MONITORING_MODE_MANUAL_OPEN_MUTED) {
+      await saveRunStage(env, "skipped_sensor_muted");
+      await env.LOCK_STATE.put("last_status", "OPEN");
+      await markRunFinish(env);
+      if (ctx) {
+        ctx.waitUntil(invalidateStatusHtmlCache());
+      }
+      return;
+    }
+
     const status = await fetchLockStatusWithSessionOnly(env);
     const prevStatus = await env.LOCK_STATE.get("last_status");
     const hadErrorNotified = await env.LOCK_STATE.get("last_error_notified");
@@ -466,7 +696,32 @@ async function sendTelegram(env, text) {
 
 async function sendStatusAnnouncement(env, status, date, channel) {
   const tag = status === "OPEN" ? "#工寮開門" : "#工寮關門";
-  const text = `${tag} ${formatTaipeiDateTime(date)}`;
+  const text = `${tag} ${formatTaipeiDateTime(date)}${SENSOR_ANNOUNCEMENT_BYLINE}`;
+  return sendTelegramToChat(env, channel, text);
+}
+
+/** Telegram `from`：有 username 時為 `（by {@username}）`，否則退而求其次用顯示名稱。 */
+function formatTelegramActorByline(from) {
+  if (!from || typeof from !== "object") {
+    return "（by {?}）";
+  }
+  const username = from.username;
+  if (username && String(username).trim()) {
+    return `（by {@${String(username).trim()}}）`;
+  }
+  const name = String(from.first_name || "").trim();
+  if (name) return `（by ${name}）`;
+  if (from.id != null) return `（by user_${from.id}）`;
+  return "（by {?}）";
+}
+
+function buildManualDoorAnnouncementText(status, date, from) {
+  const tag = status === "OPEN" ? "#工寮開門" : "#工寮關門";
+  return `${tag} ${formatTaipeiDateTime(date)}${formatTelegramActorByline(from)}`;
+}
+
+async function sendManualDoorAnnouncement(env, status, date, channel, from) {
+  const text = buildManualDoorAnnouncementText(status, date, from);
   return sendTelegramToChat(env, channel, text);
 }
 
@@ -667,6 +922,8 @@ async function readStatus(env) {
     "last_run_error",
     "last_status",
     "last_raw_status",
+    "monitoring_mode",
+    "manual_mode_changed_at",
   ];
   const entries = await Promise.all(
     keys.map(async (k) => [k, await env.LOCK_STATE.get(k)])
@@ -676,8 +933,15 @@ async function readStatus(env) {
   const started = Number(base.last_run_started_at || 0);
   const finished = Number(base.last_run_finished_at || 0);
 
+  const monitoring_mode =
+    base.monitoring_mode === MONITORING_MODE_MANUAL_OPEN_MUTED
+      ? MONITORING_MODE_MANUAL_OPEN_MUTED
+      : MONITORING_MODE_NORMAL;
+
   return {
     ...base,
+    monitoring_mode,
+    sensor_muted: monitoring_mode === MONITORING_MODE_MANUAL_OPEN_MUTED,
     last_run_started_at_iso:
       started > 0 ? new Date(started).toISOString() : null,
     last_run_finished_at_iso:
