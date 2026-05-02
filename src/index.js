@@ -211,7 +211,6 @@ async function handleTelegramWebhook(request, env, ctx) {
 
       await env.LOCK_STATE.put("monitoring_mode", MONITORING_MODE_MANUAL_OPEN_MUTED);
       await env.LOCK_STATE.put("manual_mode_changed_at", new Date().toISOString());
-      await env.LOCK_STATE.put("last_status", "OPEN");
 
       try {
         const channel = await getAnnouncementChannelOrNotify(env);
@@ -232,6 +231,9 @@ async function handleTelegramWebhook(request, env, ctx) {
             : String(announcementError);
         await sendTelegram(env, `手動開門公告發送失敗：${msg}`);
       }
+
+      // 手動開門已對外為「開」：寫入 last_status，避免恢復感測或並發 run 讀到仍為 OPEN 時再發一次感測公告／主群通知（與 manual_close 對稱）
+      await env.LOCK_STATE.put("last_status", "OPEN");
 
       const dt = formatTaipeiDateTime(new Date());
       const closeHint = botUser ? `/manual_close@${botUser}` : "/manual_close";
@@ -281,6 +283,9 @@ async function handleTelegramWebhook(request, env, ctx) {
             : String(announcementError);
         await sendTelegram(env, `手動關門公告發送失敗：${msg}`);
       }
+
+      // 手動關門已對外為「關」：先寫入 last_status，避免緊接著 runMonitor 讀到仍為 CLOSED 時再發一次感測公告／主群通知
+      await env.LOCK_STATE.put("last_status", "CLOSED");
 
       if (ctx) {
         ctx.waitUntil(
@@ -700,14 +705,14 @@ async function sendStatusAnnouncement(env, status, date, channel) {
   return sendTelegramToChat(env, channel, text);
 }
 
-/** Telegram `from`：有 username 時為 `（by {@username}）`，否則退而求其次用顯示名稱。 */
+/** Telegram `from`：有 username 時為 `（by @username）`，否則退而求其次用顯示名稱。 */
 function formatTelegramActorByline(from) {
   if (!from || typeof from !== "object") {
     return "（by {?}）";
   }
   const username = from.username;
   if (username && String(username).trim()) {
-    return `（by {@${String(username).trim()}}）`;
+    return `（by @${String(username).trim()}）`;
   }
   const name = String(from.first_name || "").trim();
   if (name) return `（by ${name}）`;
