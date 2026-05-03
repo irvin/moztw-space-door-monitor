@@ -15,6 +15,46 @@ const SENSOR_ANNOUNCEMENT_BYLINE = "（by 大門感應器）";
 const MONITORING_MODE_NORMAL = "normal";
 const MONITORING_MODE_MANUAL_OPEN_MUTED = "manual_open_muted";
 
+/** 與門鎖狀態無關的第三方網域，擋請求以縮短載入與 browser 時數 */
+const BROWSER_BLOCKED_REQUEST_HOSTS = [
+  "js.stripe.com",
+  "fonts.googleapis.com"
+];
+
+function shouldBlockRequestHostname(hostname) {
+  const h = String(hostname || "").toLowerCase();
+  if (!h) return false;
+  return BROWSER_BLOCKED_REQUEST_HOSTS.some(
+    (root) => h === root,
+  );
+}
+
+/**
+ * 在 goto 前註冊；以 hostname 比對，避免誤擋 URL 路徑內含字串。
+ * @param {import("@cloudflare/playwright").Page} page
+ */
+async function installThirdPartyRequestBlocking(page) {
+  await page.route("**/*", (route) => {
+    let url;
+    try {
+      url = route.request().url();
+    } catch {
+      route.continue().catch(() => {});
+      return;
+    }
+    try {
+      const hostname = new URL(url).hostname;
+      if (shouldBlockRequestHostname(hostname)) {
+        route.abort().catch(() => {});
+        return;
+      }
+    } catch {
+      // 非標準 URL，放行
+    }
+    route.continue().catch(() => {});
+  });
+}
+
 function renderStatusHtml(status) {
   return `<!doctype html>
 <html lang="zh-Hant">
@@ -601,6 +641,8 @@ async function fetchLockStatusWithSessionOnly(env) {
         initTimeoutMs,
         `browser newPage timeout (${initTimeoutMs}ms)`,
       );
+
+      await installThirdPartyRequestBlocking(page);
 
       // 還原 localStorage（若有）
       const rawStorage = await env.LOCK_STATE.get("session_local_storage");
