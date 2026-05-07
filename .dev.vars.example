@@ -3,4 +3,3 @@ SESSION_IMPORT_URL="http://localhost:8787/import-session"
 
 # Telegram Webhook（本機測試 webhook 時選用；與 wrangler secret 同名）
 # TELEGRAM_WEBHOOK_SECRET="與 setWebhook secret_token 相同的字串"
-# TELEGRAM_BOT_USERNAME="bot 使用者名稱不含 @，例如 moztw_space_new_event_bot"

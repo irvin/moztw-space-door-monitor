@@ -24,8 +24,6 @@ binding = "MYBROWSER"
 
 [vars]
 TELEGRAM_ENABLED = "true"        # 或 "false" 視你要不要開通知
-TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID = "@moztw_general"
-TELEGRAM_BOT_USERNAME = "moztw_space_new_event_bot"
 
 [observability]
 enabled = false
