@@ -23,6 +23,7 @@ const SENSORS_API_URL = "https://moztw-co2.yuaner.tw/sensors";
 
 const MONITORING_MODE_NORMAL = "normal";
 const MONITORING_MODE_MANUAL_OPEN_MUTED = "manual_open_muted";
+const BROWSER_INIT_RETRY_DEFAULT = 3;
 const BROWSER_INIT_RETRY_DELAY_MS_DEFAULT = 5000;
 
 /** 與門鎖狀態無關的第三方網域，擋請求以縮短載入與 browser 時數 */
@@ -637,7 +638,8 @@ async function runMonitor(env, ctx) {
 
 async function fetchLockStatusWithSessionOnly(env) {
   await saveRunStage(env, "browser_launch");
-  const maxAttempts = Math.max(1, Number(env.BROWSER_INIT_RETRY || 3));
+  const maxRetries = getBrowserInitMaxRetries(env);
+  const maxAttempts = maxRetries + 1;
   const initTimeoutMs = Math.max(5000, Number(env.BROWSER_INIT_TIMEOUT_MS || 30000));
   let lastError;
 
@@ -725,7 +727,7 @@ async function fetchLockStatusWithSessionOnly(env) {
         throw err;
       }
       const delayMs = getBrowserInitRetryDelayMs(env, attempt);
-      await saveRunStage(env, `browser_init_retry_${attempt}_wait_${delayMs}ms`);
+      await saveRunStage(env, `browser_init_retry_${attempt}_of_${maxRetries}_wait_${delayMs}ms`);
       await sleep(delayMs);
     } finally {
       if (browser) {
@@ -1113,6 +1115,13 @@ function getBrowserInitRetryDelayMs(env, attempt) {
     ? Math.max(0, configuredDelayMs)
     : BROWSER_INIT_RETRY_DELAY_MS_DEFAULT;
   return baseDelayMs * Math.max(1, attempt);
+}
+
+function getBrowserInitMaxRetries(env) {
+  const configuredRetries = Number(env.BROWSER_INIT_RETRY);
+  return Number.isFinite(configuredRetries)
+    ? Math.max(0, Math.floor(configuredRetries))
+    : BROWSER_INIT_RETRY_DEFAULT;
 }
 
 function json(data, status = 200) {

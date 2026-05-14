@@ -173,8 +173,8 @@ curl http://localhost:8787/status
 ## 重要注意
 
 - Worker 預設以 `li:has-text("工寮 Open Sensor")` 鎖定狀態列；若 Candy House 介面改版，可在 Worker 環境變數設定 `LOCK_STATUS_SELECTOR` 覆寫。
-- 其他選用環境變數（`wrangler.toml` `[vars]` 或 Cloudflare 儀表板）：`STATUS_READY_SELECTOR`、`STATUS_READY_TIMEOUT_MS`（預設 15000）、`SESSION_COOKIE_TTL_SEC`（KV 寫入 TTL，預設 7 天）、`BROWSER_INIT_RETRY`、`BROWSER_INIT_TIMEOUT_MS`、`BROWSER_INIT_RETRY_DELAY_MS`（預設 5000，會依重試次數線性增加）。
-- Cloudflare Browser Rendering 若回 `503`、`No browser available`、`Service Temporarily Unavailable`，會在同一輪監控內短暫等待後重試，不會直接等下一次 10 分鐘 cron。
+- 其他選用環境變數（`wrangler.toml` `[vars]` 或 Cloudflare 儀表板）：`STATUS_READY_SELECTOR`、`STATUS_READY_TIMEOUT_MS`（預設 15000）、`SESSION_COOKIE_TTL_SEC`（KV 寫入 TTL，預設 7 天）、`BROWSER_INIT_RETRY`（預設 3，代表初次失敗後最多重試 3 次）、`BROWSER_INIT_TIMEOUT_MS`、`BROWSER_INIT_RETRY_DELAY_MS`（預設 5000，會依重試次數線性增加）。
+- Cloudflare Browser Rendering 若回 `503`、`No browser available`、`Service Temporarily Unavailable`，會在同一輪監控內短暫等待後重試；只有重試用完後仍失敗，才會發送 Telegram 錯誤通知，不會直接等下一次 10 分鐘 cron。
 - `local-test.js` 使用與 Worker 對齊的 selector；本機除錯時請用 DevTools 確認「渲染後」DOM 再調整。
 - 若頁面有防 bot / CAPTCHA，本機手動登入仍適用；Worker 端無法自動完成互動式驗證。
 - 建議不定期執行 `npm run local:test:prod` 更新 session，減少遠端讀取失敗。
