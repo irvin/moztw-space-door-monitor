@@ -23,6 +23,7 @@ const SENSORS_API_URL = "https://moztw-co2.yuaner.tw/sensors";
 
 const MONITORING_MODE_NORMAL = "normal";
 const MONITORING_MODE_MANUAL_OPEN_MUTED = "manual_open_muted";
+const BROWSER_INIT_RETRY_DELAY_MS_DEFAULT = 5000;
 
 /** 與門鎖狀態無關的第三方網域，擋請求以縮短載入與 browser 時數 */
 const BROWSER_BLOCKED_REQUEST_HOSTS = [
@@ -723,8 +724,9 @@ async function fetchLockStatusWithSessionOnly(env) {
       if (!retryable || attempt >= maxAttempts) {
         throw err;
       }
-      await saveRunStage(env, `browser_init_retry_${attempt}`);
-      await sleep(800 * attempt);
+      const delayMs = getBrowserInitRetryDelayMs(env, attempt);
+      await saveRunStage(env, `browser_init_retry_${attempt}_wait_${delayMs}ms`);
+      await sleep(delayMs);
     } finally {
       if (browser) {
         await browser.close().catch(() => {});
@@ -1092,6 +1094,10 @@ function isRetryableBrowserInitError(err) {
   const msg = err instanceof Error ? err.message : String(err || "");
   const text = msg.toLowerCase();
   return (
+    text.includes("unable to create new browser") ||
+    text.includes("no browser available") ||
+    text.includes("code: 503") ||
+    text.includes("service temporarily unavailable") ||
     text.includes("target page, context or browser has been closed") ||
     text.includes("browser has been closed") ||
     text.includes("browser has disconnected") ||
@@ -1099,6 +1105,14 @@ function isRetryableBrowserInitError(err) {
     text.includes("browser newcontext timeout") ||
     text.includes("browser newpage timeout")
   );
+}
+
+function getBrowserInitRetryDelayMs(env, attempt) {
+  const configuredDelayMs = Number(env.BROWSER_INIT_RETRY_DELAY_MS);
+  const baseDelayMs = Number.isFinite(configuredDelayMs)
+    ? Math.max(0, configuredDelayMs)
+    : BROWSER_INIT_RETRY_DELAY_MS_DEFAULT;
+  return baseDelayMs * Math.max(1, attempt);
 }
 
 function json(data, status = 200) {
