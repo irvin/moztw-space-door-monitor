@@ -19,7 +19,7 @@ const SENSOR_ANNOUNCEMENT_BYLINE = "（by 大門感應器）";
 const SENSORS_KV_KEY = "sensors_cache";
 const SENSORS_REFRESH_THRESHOLD_MS = 10 * 60 * 1000;
 const SENSORS_FETCH_TIMEOUT_MS = 3000;
-const SENSORS_API_URL = "https://moztw-space-info-api.chyuaner.workers.dev/sensors";
+const SENSORS_API_URL = "https://moztw-co2.yuaner.tw/sensors";
 
 const MONITORING_MODE_NORMAL = "normal";
 const MONITORING_MODE_MANUAL_OPEN_MUTED = "manual_open_muted";
