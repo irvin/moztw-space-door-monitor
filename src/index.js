@@ -1,10 +1,13 @@
 import { launch } from "@cloudflare/playwright";
+import {
+  OPEN_SENSOR_DEVICE_UUID_DEFAULT,
+  WS_STATUS_TIMEOUT_MS_DEFAULT,
+  attachOpenSensorWebSocketListener,
+  waitForFirstWsCapture,
+} from "./open-sensor-ws.js";
 
 const STATUS_URL_DEFAULT = "https://biz.candyhouse.co";
 const LOGIN_URL_DEFAULT = "https://biz.candyhouse.co/login";
-const LOCK_STATUS_SELECTOR_DEFAULT = 'li:has-text("工寮 Open Sensor")';
-const DEFAULT_CLOSED_REGEX = "(Closed)";
-const DEFAULT_OPEN_REGEX = "(Open)";
 const RELOGIN_REQUIRED_TELEGRAM_MESSAGE = "門鎖監控需要重新登入，請重新匯入 session";
 const RELOGIN_REQUIRED_ERROR_MESSAGE = "需要重新登入：目前網址為 /login";
 const OPEN_ANNOUNCEMENT_CHANNEL_OPEN_TITLE = "Moz://TW（工寮開放中）";
@@ -666,6 +669,14 @@ async function fetchLockStatusWithSessionOnly(env) {
 
       await installThirdPartyRequestBlocking(page);
 
+      const deviceUuid =
+        env.OPEN_SENSOR_DEVICE_UUID || OPEN_SENSOR_DEVICE_UUID_DEFAULT;
+      const wsTimeoutMs = Math.max(
+        5000,
+        Number(env.WS_STATUS_TIMEOUT_MS || WS_STATUS_TIMEOUT_MS_DEFAULT),
+      );
+      const wsListener = attachOpenSensorWebSocketListener(page, deviceUuid);
+
       // 還原 localStorage（若有）
       const rawStorage = await env.LOCK_STATE.get("session_local_storage");
       if (rawStorage) {
@@ -689,37 +700,33 @@ async function fetchLockStatusWithSessionOnly(env) {
         }
       }
 
-      await saveRunStage(env, "open_status_page");
-      await page.goto(STATUS_URL_DEFAULT, { waitUntil: "domcontentloaded" });
-      await ensureNotOnLoginPage(page);
-      if (env.STATUS_READY_SELECTOR) {
-        await saveRunStage(env, "wait_status_ready_selector");
-        await waitForAnySelector(
-          page,
-          [env.STATUS_READY_SELECTOR],
-          "狀態頁 ready selector",
-          Number(env.STATUS_READY_TIMEOUT_MS || 15000)
+      try {
+        await saveRunStage(env, "open_status_page");
+        await page.goto(STATUS_URL_DEFAULT, { waitUntil: "domcontentloaded" });
+        await ensureNotOnLoginPage(page);
+        if (env.STATUS_READY_SELECTOR) {
+          await saveRunStage(env, "wait_status_ready_selector");
+          await waitForAnySelector(
+            page,
+            [env.STATUS_READY_SELECTOR],
+            "狀態頁 ready selector",
+            Number(env.STATUS_READY_TIMEOUT_MS || 15000),
+          );
+        }
+        await ensureNotOnLoginPage(page);
+        await saveRunStage(env, "wait_ws_device_list");
+        const { status, raw } = await waitForFirstWsCapture(
+          wsListener.getCaptured,
+          wsTimeoutMs,
+          "WebSocket PubedCompanyDevice（工寮 Open Sensor）",
         );
+        await env.LOCK_STATE.put("last_raw_status", raw);
+        await persistSessionCookies(context, env);
+        await saveRunStage(env, `status=${status}`);
+        return status;
+      } finally {
+        wsListener.detach();
       }
-      // 等待實際狀態元素出現（與 local-test.js 對齊）
-      const lockSelector = env.LOCK_STATUS_SELECTOR || LOCK_STATUS_SELECTOR_DEFAULT;
-      if (lockSelector) {
-        await saveRunStage(env, "wait_lock_status_selector");
-        await waitForAnySelector(
-          page,
-          [lockSelector],
-          "lock status 元素",
-          Number(env.STATUS_READY_TIMEOUT_MS || 15000)
-        );
-      }
-      await ensureNotOnLoginPage(page);
-      await saveRunStage(env, "read_status_text");
-      const rawStatus = await readRawStatus(page);
-      await env.LOCK_STATE.put("last_raw_status", rawStatus ?? "");
-      const status = normalizeStatus(rawStatus);
-      await persistSessionCookies(context, env);
-      await saveRunStage(env, `status=${status}`);
-      return status;
     } catch (err) {
       lastError = err;
       const retryable = isRetryableBrowserInitError(err);
@@ -737,27 +744,6 @@ async function fetchLockStatusWithSessionOnly(env) {
   }
 
   throw lastError || new Error("browser initialization failed");
-}
-
-function normalizeStatus(rawStatus) {
-  const raw = rawStatus.trim();
-  const text = raw.toLowerCase();
-
-  // 先依照字串中最後一次出現的位置決定，避免同時含有 "open" 與 "closed" 時誤判
-  const idxOpen = text.lastIndexOf("open");
-  const idxClosed = text.lastIndexOf("closed");
-  if (idxOpen !== -1 || idxClosed !== -1) {
-    if (idxClosed > idxOpen) return "CLOSED";
-    if (idxOpen > idxClosed) return "OPEN";
-  }
-
-  // 回退到舊的正則判斷（保留原行為以防未來文字有變形）
-  const closedRegex = new RegExp(DEFAULT_CLOSED_REGEX, "i");
-  const openRegex = new RegExp(DEFAULT_OPEN_REGEX, "i");
-
-  if (openRegex.test(text)) return "OPEN";
-  if (closedRegex.test(text)) return "CLOSED";
-  return `UNKNOWN(${raw})`;
 }
 
 async function sendTelegram(env, text) {
@@ -870,18 +856,6 @@ function formatTaipeiDateTime(date) {
   }).formatToParts(date);
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${value.year}/${value.month}/${value.day} ${value.hour}:${value.minute}:${value.second}`;
-}
-
-async function readRawStatus(page) {
-  const selectors = buildCandidates(LOCK_STATUS_SELECTOR_DEFAULT, []);
-  for (const selector of selectors) {
-    const loc = await findActionableLocator(page, selector);
-    if (loc) {
-      const text = await loc.textContent();
-      if (text && text.trim()) return text;
-    }
-  }
-  return (await page.textContent("body")) || "";
 }
 
 async function restoreSessionCookies(context, env) {

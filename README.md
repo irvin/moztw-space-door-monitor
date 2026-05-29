@@ -1,16 +1,16 @@
 # Door Lock Cloudflare Monitor
 
-用 Cloudflare Worker 監控「只能網頁查看」的門鎖狀態，**以既有登入 session（長效 cookie）** 讀取門鎖狀態文字，狀態變更時送 Telegram 群組通知。
+用 Cloudflare Worker 監控 Candy House 工寮 Open Sensor，**以既有登入 session（cookies + localStorage）** 開啟狀態頁、旁聽 WebSocket 裝置列表取得開關狀態，狀態變更時送 Telegram 群組通知。
 
 ## 架構與流程
 
 - `scheduled` (Cron): 每 10 分鐘執行一次監控（`wrangler.toml` 中的 `*/10 * * * *`）。
-- `Browser Rendering + Playwright`: 使用「已登入的 session」（cookies + localStorage）開啟狀態頁，讀取門鎖狀態文字。
+- `Browser Rendering + Playwright`: 使用「已登入的 session」開啟狀態頁，旁聽 Candy House WebSocket（`PubedCompanyDevice`）第一筆裝置列表，讀取工寮 Open Sensor 的 `CHSesame2Status`（`Open` / `Closed`）。
 - `KV (LOCK_STATE)`: 保存
   - `session_cookies`：登入後的 cookies
   - `session_local_storage`：登入後的 localStorage key/value
   - `last_status`：上一次成功讀到的狀態（`OPEN` / `CLOSED`；解析失敗時可能為 `UNKNOWN(...)` 字串）
-  - `last_raw_status`：上一輪讀到的原始狀態列文字
+  - `last_raw_status`：上一輪讀到的 Open Sensor `stateInfo` JSON
   - `last_run_*`：最近一次執行的時間、階段（`last_run_stage`）、成敗與錯誤訊息
   - `last_error_notified`：已透過 Telegram 通知過的錯誤內文（去重用）
   - `active_run_id` / `active_run_started_at`：執行中標記（供除錯／觀察）
@@ -39,8 +39,8 @@
    ```bash
    npm run local:test
    ```
-   - 會開啟本機瀏覽器到 Candy House 登入頁，**請你在瀏覽器內手動完成登入**（含收驗證碼等），直到畫面上出現「工寮 Open Sensor」那一列。
-   - 回到終端機按 Enter 後，腳本會讀取該列狀態文字、匯出 cookies + `localStorage`，並 `POST` 到 `SESSION_IMPORT_URL`（或上述預設本機位址）。
+   - 會開啟本機瀏覽器到 Candy House 登入頁，**請你在瀏覽器內手動完成登入**（含收驗證碼等），直到進入裝置／狀態頁。
+   - 回到終端機按 Enter 後，腳本會重新載入狀態頁、等待 WebSocket 第一筆裝置列表、印出工寮 Open Sensor 狀態，並匯出 cookies + `localStorage` 到 `SESSION_IMPORT_URL`（或上述預設本機位址）。
 3. 若 `SESSION_IMPORT_URL` 未設定，`local-test.js` 會預設把 session 傳到本機 dev：
    - `http://localhost:8787/import-session`（搭配 `npm run dev` 使用）。
 4. 若你想直接把 session 上傳到正式 Worker，請使用：
@@ -52,7 +52,7 @@
    - 流程同上：本機瀏覽器手動登入 → 按 Enter → 上傳 cookies + `localStorage` 到正式 Worker。
 5. 之後 Worker 每次執行時會：
    - 從 KV 拿出 `session_cookies` + `session_local_storage`，還原到 Browser Rendering 環境。
-   - 直接開狀態頁讀取門鎖文字，**不再**於 Worker 內自動走 OTP 登入流程。
+   - 直接開狀態頁、旁聽 WebSocket 取得 Open Sensor 狀態，**不再**於 Worker 內自動走 OTP 登入流程。
 
 ## 本地開發與測試
 
@@ -172,16 +172,17 @@ curl http://localhost:8787/status
 
 ## 重要注意
 
-- Worker 預設以 `li:has-text("工寮 Open Sensor")` 鎖定狀態列；若 Candy House 介面改版，可在 Worker 環境變數設定 `LOCK_STATUS_SELECTOR` 覆寫。
-- 其他選用環境變數（`wrangler.toml` `[vars]` 或 Cloudflare 儀表板）：`STATUS_READY_SELECTOR`、`STATUS_READY_TIMEOUT_MS`（預設 15000）、`SESSION_COOKIE_TTL_SEC`（KV 寫入 TTL，預設 7 天）、`BROWSER_INIT_RETRY`（預設 3，代表初次失敗後最多重試 3 次）、`BROWSER_INIT_TIMEOUT_MS`、`BROWSER_INIT_RETRY_DELAY_MS`（預設 5000，會依重試次數線性增加）。
+- 工寮 Open Sensor 預設以 `deviceUUID` `11200423-0300-0214-F000-4E00FFFFFFFF` 識別；可設定 `OPEN_SENSOR_DEVICE_UUID` 覆寫。
+- 其他選用環境變數（`wrangler.toml` `[vars]` 或 Cloudflare 儀表板）：`WS_STATUS_TIMEOUT_MS`（等待 WebSocket 第一筆裝置列表，預設 30000）、`STATUS_READY_SELECTOR`、`STATUS_READY_TIMEOUT_MS`（預設 15000）、`SESSION_COOKIE_TTL_SEC`（KV 寫入 TTL，預設 7 天）、`BROWSER_INIT_RETRY`（預設 3）、`BROWSER_INIT_TIMEOUT_MS`、`BROWSER_INIT_RETRY_DELAY_MS`（預設 5000）。
 - Cloudflare Browser Rendering 若回 `503`、`No browser available`、`Service Temporarily Unavailable`，會在同一輪監控內短暫等待後重試；只有重試用完後仍失敗，才會發送 Telegram 錯誤通知，不會直接等下一次 10 分鐘 cron。
-- `local-test.js` 使用與 Worker 對齊的 selector；本機除錯時請用 DevTools 確認「渲染後」DOM 再調整。
+- `local-test.js` 與 Worker 共用 `src/open-sensor-ws.js`；本機除錯可在 DevTools → Network → WS 確認 `PubedCompanyDevice` 訊息。
 - 若頁面有防 bot / CAPTCHA，本機手動登入仍適用；Worker 端無法自動完成互動式驗證。
 - 建議不定期執行 `npm run local:test:prod` 更新 session，減少遠端讀取失敗。
 
 ## 主要檔案
 
 - `src/index.js`: Worker 主程式（排程、監控、Telegram Webhook、通知）
+- `src/open-sensor-ws.js`: WebSocket 裝置列表解析與 Playwright 旁聽
 - `wrangler.toml`: Worker 綁定與 cron
 - `.dev.vars.example`: 環境變數範本
 - `.gitignore`: 忽略 `node_modules`、`.dev.vars` 等本機／敏感檔案

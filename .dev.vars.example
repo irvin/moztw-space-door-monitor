@@ -1,5 +1,11 @@
 # 匯入 session 時 POST 的目標（選用）。未設定時 local-test.js 預設為 http://localhost:8787/import-session
 SESSION_IMPORT_URL="http://localhost:8787/import-session"
 
+# 工寮 Open Sensor deviceUUID（選用，預設見 src/open-sensor-ws.js）
+# OPEN_SENSOR_DEVICE_UUID="11200423-0300-0214-F000-4E00FFFFFFFF"
+
+# 等待 WebSocket 第一筆 PubedCompanyDevice 逾時（毫秒，選用）
+# WS_STATUS_TIMEOUT_MS="30000"
+
 # Telegram Webhook（本機測試 webhook 時選用；與 wrangler secret 同名）
 # TELEGRAM_WEBHOOK_SECRET="與 setWebhook secret_token 相同的字串"
