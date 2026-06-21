@@ -24,12 +24,35 @@ const SENSORS_REFRESH_THRESHOLD_MS = 10 * 60 * 1000;
 const SENSORS_FETCH_TIMEOUT_MS = 3000;
 const SENSORS_API_URL = "https://moztw-co2.yuaner.tw/sensors";
 
+/** yuaner API 可能為扁平物件，或包在 `{ sensors: { ... } }`（含舊 KV 雙層）。 */
+function normalizeSensorsPayload(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  let payload = /** @type {Record<string, unknown>} */ (raw);
+  for (let depth = 0; depth < 3; depth++) {
+    if (
+      "temperature" in payload ||
+      "door_open" in payload ||
+      "humidity" in payload ||
+      "carbondioxide" in payload
+    ) {
+      return payload;
+    }
+    const wrapped = payload.sensors;
+    if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) {
+      return payload;
+    }
+    payload = /** @type {Record<string, unknown>} */ (wrapped);
+  }
+  return payload;
+}
+
 /**
  * @param {unknown} sensors
  * @returns {boolean|null} true=開門、false=關門、null=無資料
  */
 function readDoorOpenFromSensors(sensors) {
-  const value = sensors?.door_open?.[0]?.value;
+  const normalized = normalizeSensorsPayload(sensors);
+  const value = normalized?.door_open?.[0]?.value;
   if (typeof value !== "boolean") return null;
   return value;
 }
@@ -54,7 +77,8 @@ function computeCombinedOpen(candyHouseStatus, sensors) {
  * @returns {number|undefined} Unix 秒
  */
 function computeCombinedLastchangeSec(candyFinishedMs, sensors) {
-  const doorSec = Number(sensors?.door_open?.[0]?.lastchange || 0);
+  const normalized = normalizeSensorsPayload(sensors);
+  const doorSec = Number(normalized?.door_open?.[0]?.lastchange || 0);
   const candySec =
     Number.isFinite(candyFinishedMs) && candyFinishedMs > 0
       ? Math.floor(candyFinishedMs / 1000)
@@ -1048,7 +1072,7 @@ async function getSensorsData(env) {
     await refreshSensorsToKV(env);
     cached = await readSensorsFromKV(env);
   }
-  return cached?.data ?? null;
+  return normalizeSensorsPayload(cached?.data ?? null);
 }
 
 async function readSensorsFromKV(env) {
@@ -1073,8 +1097,9 @@ async function refreshSensorsToKV(env) {
     );
     if (!resp.ok) return;
     const text = await resp.text();
-    const data = JSON.parse(text);
-    if (!data || typeof data !== "object") return;
+    const parsed = JSON.parse(text);
+    const data = normalizeSensorsPayload(parsed);
+    if (!data) return;
     await env.LOCK_STATE.put(
       SENSORS_KV_KEY,
       JSON.stringify({ fetched_at: Date.now(), data }),
