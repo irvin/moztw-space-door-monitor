@@ -24,6 +24,66 @@ const SENSORS_REFRESH_THRESHOLD_MS = 10 * 60 * 1000;
 const SENSORS_FETCH_TIMEOUT_MS = 3000;
 const SENSORS_API_URL = "https://moztw-co2.yuaner.tw/sensors";
 
+/**
+ * @param {unknown} sensors
+ * @returns {boolean|null} true=開門、false=關門、null=無資料
+ */
+function readDoorOpenFromSensors(sensors) {
+  const value = sensors?.door_open?.[0]?.value;
+  if (typeof value !== "boolean") return null;
+  return value;
+}
+
+/**
+ * Candy House 與 door_open OR：任一方為開即視為開門。
+ * @param {string|null|undefined} candyHouseStatus
+ * @param {unknown} sensors
+ * @returns {boolean|undefined}
+ */
+function computeCombinedOpen(candyHouseStatus, sensors) {
+  const candyOpen = candyHouseStatus === "OPEN";
+  const doorOpen = readDoorOpenFromSensors(sensors);
+  if (candyOpen || doorOpen === true) return true;
+  if (candyHouseStatus === "CLOSED" || doorOpen === false) return false;
+  return undefined;
+}
+
+/**
+ * @param {number} candyFinishedMs
+ * @param {unknown} sensors
+ * @returns {number|undefined} Unix 秒
+ */
+function computeCombinedLastchangeSec(candyFinishedMs, sensors) {
+  const doorSec = Number(sensors?.door_open?.[0]?.lastchange || 0);
+  const candySec =
+    Number.isFinite(candyFinishedMs) && candyFinishedMs > 0
+      ? Math.floor(candyFinishedMs / 1000)
+      : 0;
+  const maxSec = Math.max(candySec, doorSec);
+  return maxSec > 0 ? maxSec : undefined;
+}
+
+/**
+ * @param {Record<string, unknown>} status
+ * @param {unknown|null} sensors
+ */
+function enrichStatusWithDoorState(status, sensors) {
+  const combinedOpen = computeCombinedOpen(status.last_status, sensors);
+  const doorOpen = readDoorOpenFromSensors(sensors);
+  const effective_status =
+    combinedOpen === true
+      ? "OPEN"
+      : combinedOpen === false
+        ? "CLOSED"
+        : status.last_status || "UNKNOWN";
+  return {
+    ...status,
+    door_open: doorOpen,
+    effective_open: combinedOpen,
+    effective_status,
+  };
+}
+
 const MONITORING_MODE_NORMAL = "normal";
 const MONITORING_MODE_MANUAL_OPEN_MUTED = "manual_open_muted";
 const BROWSER_INIT_RETRY_DEFAULT = 3;
@@ -101,12 +161,12 @@ function renderStatusHtml(status) {
     }
     <div class="label">目前狀態</div>
     <div class="status ${
-      status.last_status === "OPEN"
+      status.effective_status === "OPEN"
         ? "status-open"
-        : status.last_status === "CLOSED"
+        : status.effective_status === "CLOSED"
         ? "status-closed"
         : "status-unknown"
-    }">${status.last_status || "UNKNOWN"}</div>
+    }">${status.effective_status || "UNKNOWN"}</div>
 
     <div class="label">最近檢查完成時間</div>
     <div class="value" id="last-finished" data-utc="${status.last_run_finished_at_iso || ""}">
@@ -123,6 +183,9 @@ function renderStatusHtml(status) {
       Run ID: <code>${status.last_run_id || "-"}</code>
       <br/>
       上次開始時間: <code id="last-started" data-utc="${status.last_run_started_at_iso || ""}">${status.last_run_started_at_iso || "尚無紀錄"}</code>
+      <br/>
+      Candy House: <code>${status.last_status || "-"}</code>
+      · door_open: <code>${status.door_open === true ? "true（開）" : status.door_open === false ? "false（關）" : "-"}</code>
       <br/>
       原始狀態文字: <code>${(status.last_raw_status || "").slice(0, 120) || "-"}</code>
     </div>
@@ -377,7 +440,10 @@ export default {
     }
 
     if (url.pathname === "/" && request.method === "GET") {
-      const status = await readStatus(env);
+      const status = enrichStatusWithDoorState(
+        await readStatus(env),
+        await getSensorsData(env),
+      );
       const html = renderStatusHtml(status);
       return new Response(html, {
         status: 200,
@@ -436,7 +502,8 @@ export default {
         }
       }
 
-      const status = await readStatus(env);
+      const sensors = await getSensorsData(env);
+      const status = enrichStatusWithDoorState(await readStatus(env), sensors);
 
       if (wantsHtml) {
         const html = renderStatusHtml(status);
@@ -462,29 +529,14 @@ export default {
       }
 
       const status = await readStatus(env);
-
-      const open =
-        status.last_status === "OPEN"
-          ? true
-          : status.last_status === "CLOSED"
-          ? false
-          : undefined;
-      const lastchangeMs = Number(status.last_run_finished_at || 0);
-      const lastchange =
-        Number.isFinite(lastchangeMs) && lastchangeMs > 0
-          ? Math.floor(lastchangeMs / 1000)
-          : undefined;
+      const sensors = await getSensorsData(env);
+      const open = computeCombinedOpen(status.last_status, sensors);
+      const lastchange = computeCombinedLastchangeSec(
+        Number(status.last_run_finished_at || 0),
+        sensors,
+      );
 
       const sensorMuted = status.sensor_muted === true;
-
-      const cachedSensors = await readSensorsFromKV(env);
-      const isStale =
-        !cachedSensors ||
-        Date.now() - cachedSensors.fetched_at > SENSORS_REFRESH_THRESHOLD_MS;
-      if (isStale && ctx) {
-        ctx.waitUntil(refreshSensorsToKV(env));
-      }
-      const sensors = cachedSensors?.data ?? null;
 
       const payload = {
         api_compatibility: ["15", "16"],
@@ -985,6 +1037,18 @@ async function readStatus(env) {
     last_run_finished_at_iso:
       finished > 0 ? new Date(finished).toISOString() : null,
   };
+}
+
+async function getSensorsData(env) {
+  let cached = await readSensorsFromKV(env);
+  const isStale =
+    !cached ||
+    Date.now() - cached.fetched_at > SENSORS_REFRESH_THRESHOLD_MS;
+  if (isStale) {
+    await refreshSensorsToKV(env);
+    cached = await readSensorsFromKV(env);
+  }
+  return cached?.data ?? null;
 }
 
 async function readSensorsFromKV(env) {
