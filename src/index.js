@@ -58,17 +58,53 @@ function readDoorOpenFromSensors(sensors) {
 }
 
 /**
- * Candy House 與 door_open OR：任一方為開即視為開門。
- * @param {string|null|undefined} candyHouseStatus
- * @param {unknown} sensors
- * @returns {boolean|undefined}
+ * @returns {{
+ *   status: "OPEN"|"CLOSED"|null;
+ *   conflict: boolean;
+ *   conflictMessage?: string;
+ * }}
  */
-function computeCombinedOpen(candyHouseStatus, sensors) {
-  const candyOpen = candyHouseStatus === "OPEN";
-  const doorOpen = readDoorOpenFromSensors(sensors);
-  if (candyOpen || doorOpen === true) return true;
-  if (candyHouseStatus === "CLOSED" || doorOpen === false) return false;
-  return undefined;
+function resolveEffectiveDoorState(candyHouseStatus, sensors) {
+  const ch =
+    candyHouseStatus === "OPEN" || candyHouseStatus === "CLOSED"
+      ? candyHouseStatus
+      : null;
+  const sb = readDoorOpenFromSensors(sensors);
+
+  if (ch && sb !== null) {
+    const chOpen = ch === "OPEN";
+    if (chOpen !== sb) {
+      return {
+        status: null,
+        conflict: true,
+        conflictMessage: `感測器狀態不一致：Candy House ${ch === "OPEN" ? "開" : "關"}、SwitchBot ${sb ? "開" : "關"}`,
+      };
+    }
+  }
+
+  if (ch === "CLOSED" || sb === false) {
+    return { status: "CLOSED", conflict: false };
+  }
+  if (ch === "OPEN") {
+    return { status: "OPEN", conflict: false };
+  }
+  if (sb === true) {
+    return { status: "OPEN", conflict: false };
+  }
+  return { status: null, conflict: false };
+}
+
+/**
+ * 手動 /manual_close 覆寫（normal 模式）：感測仍判開時維持關，直到感測一致為關。
+ * @param {{ status: "OPEN"|"CLOSED"|null; conflict: boolean; conflictMessage?: string }} resolution
+ * @param {boolean} overrideActive
+ */
+function applyManualClosedOverride(resolution, overrideActive) {
+  if (!overrideActive) return resolution;
+  if (resolution.status === "CLOSED" && !resolution.conflict) {
+    return resolution;
+  }
+  return { status: "CLOSED", conflict: false };
 }
 
 /**
@@ -92,24 +128,35 @@ function computeCombinedLastchangeSec(candyFinishedMs, sensors) {
  * @param {unknown|null} sensors
  */
 function enrichStatusWithDoorState(status, sensors) {
-  const combinedOpen = computeCombinedOpen(status.last_status, sensors);
+  const overrideActive = status.manual_closed_override === "1";
+  let resolution = resolveEffectiveDoorState(status.last_status, sensors);
+  resolution = applyManualClosedOverride(resolution, overrideActive);
   const doorOpen = readDoorOpenFromSensors(sensors);
-  const effective_status =
-    combinedOpen === true
-      ? "OPEN"
-      : combinedOpen === false
-        ? "CLOSED"
-        : status.last_status || "UNKNOWN";
+  const effective_status = resolution.conflict
+    ? status.last_effective_status || "CONFLICT"
+    : resolution.status ||
+      status.last_effective_status ||
+      status.last_status ||
+      "UNKNOWN";
   return {
     ...status,
     door_open: doorOpen,
-    effective_open: combinedOpen,
+    manual_closed_override: overrideActive,
+    sensor_conflict: resolution.conflict,
+    effective_open: resolution.conflict
+      ? undefined
+      : resolution.status === "OPEN"
+        ? true
+        : resolution.status === "CLOSED"
+          ? false
+          : undefined,
     effective_status,
   };
 }
 
 const MONITORING_MODE_NORMAL = "normal";
 const MONITORING_MODE_MANUAL_OPEN_MUTED = "manual_open_muted";
+const MANUAL_CLOSED_OVERRIDE_KV_KEY = "manual_closed_override";
 const BROWSER_INIT_RETRY_DEFAULT = 3;
 const BROWSER_INIT_RETRY_DELAY_MS_DEFAULT = 5000;
 
@@ -183,7 +230,17 @@ function renderStatusHtml(status) {
         ? `<div class="banner">感測隔離中（手動開門）：Cron 與 /run 不會讀取網頁感測，請以 Telegram /manual_close 恢復。</div>`
         : ""
     }
-    <div class="label">目前狀態</div>
+    ${
+      status.manual_closed_override
+        ? `<div class="banner">手動關門覆寫中：對外顯示關門，自動偵測仍運行；感測一致為關後自動解除（/manual_close）。</div>`
+        : ""
+    }
+    ${
+      status.sensor_conflict
+        ? `<div class="banner">感測器狀態不一致（Candy House 與 SwitchBot 相左）：暫不更新開關門判斷，已通知公告頻道。</div>`
+        : ""
+    }
+    <div class="label">目前狀態（CH+SB 合併）</div>
     <div class="status ${
       status.effective_status === "OPEN"
         ? "status-open"
@@ -258,7 +315,7 @@ async function getMonitoringMode(env) {
 }
 
 /**
- * 解析群組內 `/manual_open@Bot` 或 `/manual_close@Bot`（Bot 使用者名稱不含 @）。
+ * 解析群組內 `/manual_open@Bot` 或 `/manual_close@Bot`。
  * @returns {{ kind: "manual_open" | "manual_close" | null; wrongBot?: boolean }}
  */
 function parseManualTelegramCommand(text, expectedBotUsername) {
@@ -352,6 +409,7 @@ async function handleTelegramWebhook(request, env, ctx) {
 
       await env.LOCK_STATE.put("monitoring_mode", MONITORING_MODE_MANUAL_OPEN_MUTED);
       await env.LOCK_STATE.put("manual_mode_changed_at", new Date().toISOString());
+      await env.LOCK_STATE.delete(MANUAL_CLOSED_OVERRIDE_KV_KEY);
 
       try {
         const channel = await getAnnouncementChannelOrNotify();
@@ -375,6 +433,7 @@ async function handleTelegramWebhook(request, env, ctx) {
 
       // 手動開門已對外為「開」：寫入 last_status，避免恢復感測或並發 run 讀到仍為 OPEN 時再發一次感測公告／主群通知（與 manual_close 對稱）
       await env.LOCK_STATE.put("last_status", "OPEN");
+      await env.LOCK_STATE.put("last_effective_status", "OPEN");
 
       const dt = formatTaipeiDateTime(new Date());
       const closeHint = `/manual_close@${botUser}`;
@@ -392,18 +451,19 @@ async function handleTelegramWebhook(request, env, ctx) {
 
     if (parsed.kind === "manual_close") {
       const mode = await getMonitoringMode(env);
-      if (mode !== MONITORING_MODE_MANUAL_OPEN_MUTED) {
-        await sendTelegramToChat(
-          env,
-          allowedChat,
-          "目前並非手動開門隔離狀態。",
-          replyOpts,
-        );
-        return json({ ok: true });
+      const wasMuted = mode === MONITORING_MODE_MANUAL_OPEN_MUTED;
+      const prevEffective = await env.LOCK_STATE.get("last_effective_status");
+
+      if (wasMuted) {
+        await env.LOCK_STATE.put("monitoring_mode", MONITORING_MODE_NORMAL);
+        await env.LOCK_STATE.put("manual_mode_changed_at", new Date().toISOString());
+        await env.LOCK_STATE.delete(MANUAL_CLOSED_OVERRIDE_KV_KEY);
+      } else {
+        await env.LOCK_STATE.put(MANUAL_CLOSED_OVERRIDE_KV_KEY, "1");
       }
 
-      await env.LOCK_STATE.put("monitoring_mode", MONITORING_MODE_NORMAL);
-      await env.LOCK_STATE.put("manual_mode_changed_at", new Date().toISOString());
+      await env.LOCK_STATE.put("last_status", "CLOSED");
+      await env.LOCK_STATE.put("last_effective_status", "CLOSED");
 
       try {
         const channel = await getAnnouncementChannelOrNotify();
@@ -425,24 +485,36 @@ async function handleTelegramWebhook(request, env, ctx) {
         await sendTelegram(env, `手動關門公告發送失敗：${msg}`);
       }
 
-      // 手動關門已對外為「關」：先寫入 last_status，避免緊接著 runMonitor 讀到仍為 CLOSED 時再發一次感測公告／主群通知
-      await env.LOCK_STATE.put("last_status", "CLOSED");
-
-      if (ctx) {
-        ctx.waitUntil(
-          runMonitor(env, ctx).catch(() => {
-            // 錯誤已由 runMonitor 內 Telegram 通知；webhook 仍回 200
-          }),
-        );
-        ctx.waitUntil(invalidateStatusHtmlCache());
+      if (prevEffective !== "CLOSED") {
+        await sendTelegram(env, "工寮大門：已關閉");
       }
 
-      await sendTelegramToChat(
-        env,
-        allowedChat,
-        "已恢復自動偵測，將依感測同步門鎖狀態。",
-        replyOpts,
-      );
+      if (wasMuted) {
+        if (ctx) {
+          ctx.waitUntil(
+            runMonitor(env, ctx).catch(() => {
+              // 錯誤已由 runMonitor 內 Telegram 通知；webhook 仍回 200
+            }),
+          );
+          ctx.waitUntil(invalidateStatusHtmlCache());
+        }
+        await sendTelegramToChat(
+          env,
+          allowedChat,
+          "已結束手動開門隔離，並切換為關門；自動偵測已恢復。",
+          replyOpts,
+        );
+      } else {
+        await sendTelegramToChat(
+          env,
+          allowedChat,
+          "已手動切換為關門（自動偵測仍運行；感測一致為關後解除覆寫）。",
+          replyOpts,
+        );
+        if (ctx) {
+          ctx.waitUntil(invalidateStatusHtmlCache());
+        }
+      }
       return json({ ok: true });
     }
   } catch (err) {
@@ -554,7 +626,20 @@ export default {
 
       const status = await readStatus(env);
       const sensors = await getSensorsData(env);
-      const open = computeCombinedOpen(status.last_status, sensors);
+      const overrideActive = status.manual_closed_override === "1";
+      let resolution = resolveEffectiveDoorState(status.last_status, sensors);
+      resolution = applyManualClosedOverride(resolution, overrideActive);
+      let open;
+      if (resolution.conflict) {
+        open =
+          status.last_effective_status === "OPEN"
+            ? true
+            : status.last_effective_status === "CLOSED"
+              ? false
+              : undefined;
+      } else if (resolution.status) {
+        open = resolution.status === "OPEN";
+      }
       const lastchange = computeCombinedLastchangeSec(
         Number(status.last_run_finished_at || 0),
         sensors,
@@ -579,6 +664,8 @@ export default {
           ...(typeof open === "boolean" ? { open } : {}),
           ...(lastchange ? { lastchange } : {}),
           ...(sensorMuted ? { sensor_muted: true } : {}),
+          ...(resolution.conflict ? { sensor_conflict: true } : {}),
+          ...(overrideActive ? { manual_closed_override: true } : {}),
           icon: {
             open: "https://moztw.org/space/images/open.png",
             closed: "https://moztw.org/space/images/closed.png",
@@ -634,6 +721,97 @@ export default {
   },
 };
 
+const SENSOR_CONFLICT_RECOVERY_MESSAGE = "感測器狀態已恢復一致";
+
+async function notifySensorConflict(env, conflictMessage) {
+  const channel = await getAnnouncementChannelOrNotify();
+  if (!channel || !conflictMessage) return;
+  if (await shouldNotifyConflict(env, conflictMessage)) {
+    await sendTelegramToChat(env, channel, conflictMessage);
+  }
+}
+
+async function publishEffectiveStatusChange(env, ctx, status) {
+  await sendTelegram(
+    env,
+    status === "OPEN" ? "工寮大門：已開啟" : "工寮大門：已關閉",
+  );
+  if (status === "OPEN" || status === "CLOSED") {
+    try {
+      const channel = await getAnnouncementChannelOrNotify();
+      if (channel) {
+        await sendStatusAnnouncement(env, status, new Date(), channel);
+        await updateStatusAnnouncementChannelTitle(env, status, channel);
+      }
+    } catch (announcementError) {
+      const msg =
+        announcementError instanceof Error
+          ? announcementError.message
+          : String(announcementError);
+      await sendTelegram(env, `開關門公告發送失敗：${msg}`);
+    }
+  }
+  if (ctx) {
+    ctx.waitUntil(invalidateStatusHtmlCache());
+  }
+}
+
+/**
+ * @returns {Promise<{ conflict: boolean; conflictMessage?: string }>}
+ */
+async function processEffectiveStatusAndNotify(env, ctx, input) {
+  const sensors = await getSensorsData(env);
+  const lastStatus = await env.LOCK_STATE.get("last_status");
+  const candyForCombine = input.freshCandyStatus ?? lastStatus;
+  const overrideActive =
+    (await env.LOCK_STATE.get(MANUAL_CLOSED_OVERRIDE_KV_KEY)) === "1";
+  let resolution = resolveEffectiveDoorState(candyForCombine, sensors);
+  const rawResolution = resolution;
+  resolution = applyManualClosedOverride(resolution, overrideActive);
+
+  if (
+    overrideActive &&
+    rawResolution.status === "CLOSED" &&
+    !rawResolution.conflict
+  ) {
+    await env.LOCK_STATE.delete(MANUAL_CLOSED_OVERRIDE_KV_KEY);
+  }
+
+  const prevEffective = await env.LOCK_STATE.get("last_effective_status");
+  const hadErrorNotified = await env.LOCK_STATE.get("last_error_notified");
+  const hadConflictActive = await env.LOCK_STATE.get("last_sensor_conflict_active");
+
+  if (!input.candyFetchFailed && hadErrorNotified) {
+    await sendTelegram(env, "門鎖監控已恢復正常");
+    await env.LOCK_STATE.delete("last_error_notified");
+  }
+
+  if (resolution.conflict) {
+    await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
+    await notifySensorConflict(env, resolution.conflictMessage);
+    if (ctx) {
+      ctx.waitUntil(invalidateStatusHtmlCache());
+    }
+    return { conflict: true, conflictMessage: resolution.conflictMessage };
+  }
+
+  if (hadConflictActive === "1") {
+    await env.LOCK_STATE.delete("last_sensor_conflict_active");
+    await env.LOCK_STATE.delete("last_conflict_notified");
+    const channel = await getAnnouncementChannelOrNotify();
+    if (channel) {
+      await sendTelegramToChat(env, channel, SENSOR_CONFLICT_RECOVERY_MESSAGE);
+    }
+  }
+
+  if (resolution.status && resolution.status !== prevEffective) {
+    await env.LOCK_STATE.put("last_effective_status", resolution.status);
+    await publishEffectiveStatusChange(env, ctx, resolution.status);
+  }
+
+  return { conflict: false };
+}
+
 async function runMonitor(env, ctx) {
   const now = Date.now();
   const runId = crypto.randomUUID();
@@ -648,6 +826,7 @@ async function runMonitor(env, ctx) {
     if (monitoringMode === MONITORING_MODE_MANUAL_OPEN_MUTED) {
       await saveRunStage(env, "skipped_sensor_muted");
       await env.LOCK_STATE.put("last_status", "OPEN");
+      await env.LOCK_STATE.put("last_effective_status", "OPEN");
       await markRunFinish(env);
       if (ctx) {
         ctx.waitUntil(invalidateStatusHtmlCache());
@@ -655,43 +834,43 @@ async function runMonitor(env, ctx) {
       return;
     }
 
-    const status = await fetchLockStatusWithSessionOnly(env);
-    const prevStatus = await env.LOCK_STATE.get("last_status");
-    const hadErrorNotified = await env.LOCK_STATE.get("last_error_notified");
-
-    // 若前一輪曾有錯誤並發出通知，先發恢復正常訊息，再處理本輪的開關門狀態
-    if (hadErrorNotified) {
-      await sendTelegram(env, "門鎖監控已恢復正常");
-      await env.LOCK_STATE.delete("last_error_notified");
-    }
-
-    if (!prevStatus) {
-      await env.LOCK_STATE.put("last_status", status);
-      await sendTelegram(env, status === "OPEN" ? "工寮大門：已開啟" : "工寮大門：已關閉");
-      if (ctx) {
-        ctx.waitUntil(invalidateStatusHtmlCache());
-      }
-    } else if (prevStatus !== status) {
-      await env.LOCK_STATE.put("last_status", status);
-      await sendTelegram(env, status === "OPEN" ? "工寮大門：已開啟" : "工寮大門：已關閉");
-      if (status === "OPEN" || status === "CLOSED") {
-        try {
-          const channel = await getAnnouncementChannelOrNotify();
-          if (channel) {
-            await sendStatusAnnouncement(env, status, new Date(), channel);
-            await updateStatusAnnouncementChannelTitle(env, status, channel);
-          }
-        } catch (announcementError) {
-          const msg =
-            announcementError instanceof Error
-              ? announcementError.message
-              : String(announcementError);
-          await sendTelegram(env, `開關門公告發送失敗：${msg}`);
+    let freshCandyStatus = null;
+    let candyFetchFailed = false;
+    try {
+      freshCandyStatus = await fetchLockStatusWithSessionOnly(env);
+      await env.LOCK_STATE.put("last_status", freshCandyStatus);
+    } catch (err) {
+      candyFetchFailed = true;
+      const result = await processEffectiveStatusAndNotify(env, ctx, {
+        freshCandyStatus: null,
+        candyFetchFailed: true,
+      });
+      const msg = err instanceof Error ? err.message : String(err);
+      await markRunFail(
+        env,
+        result.conflict ? result.conflictMessage || "感測器狀態不一致" : msg,
+      );
+      if (!result.conflict) {
+        const telegramErrorText = isReloginRequiredError(msg)
+          ? RELOGIN_REQUIRED_TELEGRAM_MESSAGE
+          : `門鎖監控錯誤：${msg}`;
+        if (await shouldNotifyError(env, telegramErrorText)) {
+          await sendTelegram(env, telegramErrorText);
         }
       }
-      if (ctx) {
-        ctx.waitUntil(invalidateStatusHtmlCache());
-      }
+      return;
+    }
+
+    const result = await processEffectiveStatusAndNotify(env, ctx, {
+      freshCandyStatus,
+      candyFetchFailed: false,
+    });
+    if (result.conflict) {
+      await markRunFail(
+        env,
+        result.conflictMessage || "感測器狀態不一致",
+      );
+      return;
     }
 
     await markRunFinish(env);
@@ -701,7 +880,6 @@ async function runMonitor(env, ctx) {
     const telegramErrorText = isReloginRequiredError(msg)
       ? RELOGIN_REQUIRED_TELEGRAM_MESSAGE
       : `門鎖監控錯誤：${msg}`;
-    // 只在錯誤訊息與上次通知不同時才發送 Telegram，避免 cron 重複洗版
     if (await shouldNotifyError(env, telegramErrorText)) {
       await sendTelegram(env, telegramErrorText);
     }
@@ -1035,6 +1213,8 @@ async function readStatus(env) {
     "last_run_ok",
     "last_run_error",
     "last_status",
+    "last_effective_status",
+    "manual_closed_override",
     "last_raw_status",
     "monitoring_mode",
     "manual_mode_changed_at",
@@ -1132,6 +1312,15 @@ async function shouldNotifyError(env, msg) {
     return false;
   }
   await env.LOCK_STATE.put("last_error_notified", msg || "");
+  return true;
+}
+
+async function shouldNotifyConflict(env, msg) {
+  const prev = await env.LOCK_STATE.get("last_conflict_notified");
+  if (prev && prev === msg) {
+    return false;
+  }
+  await env.LOCK_STATE.put("last_conflict_notified", msg || "");
   return true;
 }
 
