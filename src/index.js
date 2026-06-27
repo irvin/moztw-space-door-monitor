@@ -20,6 +20,8 @@ const TELEGRAM_BOT_USERNAME = "moztw_space_new_event_bot";
 const SENSOR_ANNOUNCEMENT_BYLINE = "（by 大門感應器）";
 
 const SENSORS_KV_KEY = "sensors_cache";
+const SENSORS_REFRESH_INFLIGHT_KEY = "sensors_refresh_inflight";
+const SENSORS_REFRESH_INFLIGHT_TTL_SEC = 30;
 const SENSORS_REFRESH_THRESHOLD_MS = 10 * 60 * 1000;
 const SENSORS_FETCH_TIMEOUT_MS = 3000;
 const SENSORS_API_URL = "https://moztw-co2.yuaner.tw/sensors";
@@ -562,7 +564,7 @@ export default {
     if (url.pathname === "/" && request.method === "GET") {
       const status = enrichStatusWithDoorState(
         await readStatus(env),
-        await getSensorsData(env),
+        await getSensorsDataStrict(env),
       );
       const html = renderStatusHtml(status);
       return new Response(html, {
@@ -622,7 +624,7 @@ export default {
         }
       }
 
-      const sensors = await getSensorsData(env);
+      const sensors = await getSensorsDataStrict(env);
       const status = enrichStatusWithDoorState(await readStatus(env), sensors);
 
       if (wantsHtml) {
@@ -649,21 +651,15 @@ export default {
       }
 
       const status = await readStatus(env);
-      const sensors = await getSensorsData(env);
+      const sensorsResult = await getSensorsDataForPublic(env, ctx);
+      const sensors = sensorsResult.data;
       const overrideActive = status.manual_closed_override === "1";
-      let resolution = resolveEffectiveDoorState(status.last_status, sensors);
-      resolution = applyManualClosedOverride(resolution, overrideActive);
-      let open;
-      if (resolution.conflict) {
-        open =
-          status.last_effective_status === "OPEN"
-            ? true
-            : status.last_effective_status === "CLOSED"
-              ? false
-              : undefined;
-      } else if (resolution.status) {
-        open = resolution.status === "OPEN";
-      }
+      const { open, conflict } = resolveApiOpenState(
+        status,
+        sensors,
+        overrideActive,
+        sensorsResult.stale,
+      );
       const lastchange = computeCombinedLastchangeSec(
         Number(status.last_run_finished_at || 0),
         sensors,
@@ -688,7 +684,7 @@ export default {
           ...(typeof open === "boolean" ? { open } : {}),
           ...(lastchange ? { lastchange } : {}),
           ...(sensorMuted ? { sensor_muted: true } : {}),
-          ...(resolution.conflict ? { sensor_conflict: true } : {}),
+          ...(conflict ? { sensor_conflict: true } : {}),
           ...(overrideActive ? { manual_closed_override: true } : {}),
           icon: {
             open: "https://moztw.org/space/images/open.png",
@@ -717,6 +713,10 @@ export default {
           }
         },
         ...(sensors ? { sensors } : {}),
+        sensors_meta: {
+          fetched_at: new Date(sensorsResult.fetched_at).toISOString(),
+          stale: sensorsResult.stale,
+        },
       };
 
       const resp = new Response(JSON.stringify(payload), {
@@ -784,7 +784,7 @@ async function publishEffectiveStatusChange(env, ctx, status) {
  * @returns {Promise<{ conflict: boolean; conflictMessage?: string }>}
  */
 async function processEffectiveStatusAndNotify(env, ctx, input) {
-  const sensors = input.sensors ?? (await getSensorsData(env));
+  const sensors = input.sensors ?? (await getSensorsDataStrict(env));
   const lastStatus = await env.LOCK_STATE.get("last_status");
   const candyForCombine = input.freshCandyStatus ?? lastStatus;
   const overrideActive =
@@ -861,7 +861,7 @@ async function runMonitor(env, ctx) {
 
     let freshCandyStatus = null;
     let candyFetchFailed = false;
-    const sensorsPromise = getSensorsData(env);
+    const sensorsPromise = getSensorsDataStrict(env);
     try {
       freshCandyStatus = await fetchLockStatusWithSessionOnly(env);
       await putIfChanged(env, "last_status", freshCandyStatus);
@@ -1235,6 +1235,7 @@ async function readStatus(env) {
     "last_raw_status",
     "monitoring_mode",
     "manual_mode_changed_at",
+    "last_sensor_conflict_active",
   ];
   const entries = await Promise.all(
     keys.map(async (k) => [k, await env.LOCK_STATE.get(k)])
@@ -1260,16 +1261,94 @@ async function readStatus(env) {
   };
 }
 
-async function getSensorsData(env) {
-  let cached = await readSensorsFromKV(env);
-  const isStale =
+function isSensorsCacheStale(cached) {
+  return (
     !cached ||
-    Date.now() - cached.fetched_at > SENSORS_REFRESH_THRESHOLD_MS;
-  if (isStale) {
-    await refreshSensorsToKV(env);
+    Date.now() - cached.fetched_at > SENSORS_REFRESH_THRESHOLD_MS
+  );
+}
+
+/**
+ * @param {Record<string, unknown>} status
+ * @param {unknown|null} sensors
+ * @param {boolean} overrideActive
+ * @param {boolean} sensorsStale
+ * @returns {{ open: boolean|undefined; conflict: boolean }}
+ */
+function resolveApiOpenState(status, sensors, overrideActive, sensorsStale) {
+  if (sensorsStale) {
+    const conflict = status.last_sensor_conflict_active === "1";
+    if (conflict) {
+      const open =
+        status.last_effective_status === "OPEN"
+          ? true
+          : status.last_effective_status === "CLOSED"
+            ? false
+            : undefined;
+      return { open, conflict: true };
+    }
+    let resolution = resolveEffectiveDoorState(status.last_status, sensors);
+    resolution = applyManualClosedOverride(resolution, overrideActive);
+    const open = resolution.status
+      ? resolution.status === "OPEN"
+      : undefined;
+    return { open, conflict: false };
+  }
+
+  let resolution = resolveEffectiveDoorState(status.last_status, sensors);
+  resolution = applyManualClosedOverride(resolution, overrideActive);
+  let open;
+  if (resolution.conflict) {
+    open =
+      status.last_effective_status === "OPEN"
+        ? true
+        : status.last_effective_status === "CLOSED"
+          ? false
+          : undefined;
+  } else if (resolution.status) {
+    open = resolution.status === "OPEN";
+  }
+  return { open, conflict: resolution.conflict };
+}
+
+/** 監控路徑：stale 時同步 refresh yuaner。 */
+async function getSensorsDataStrict(env) {
+  let cached = await readSensorsFromKV(env);
+  if (isSensorsCacheStale(cached)) {
+    await refreshSensorsToKV(env, { force: true });
     cached = await readSensorsFromKV(env);
   }
   return normalizeSensorsPayload(cached?.data ?? null);
+}
+
+/**
+ * GET /api：stale 時先回 KV 快取，背景 refresh。
+ * @param {Record<string, unknown>} env
+ * @param {ExecutionContext} [ctx]
+ */
+async function getSensorsDataForPublic(env, ctx) {
+  let cached = await readSensorsFromKV(env);
+  if (!cached) {
+    await refreshSensorsToKV(env, { force: true });
+    cached = await readSensorsFromKV(env);
+    const fetchedAt = cached?.fetched_at ?? Date.now();
+    return {
+      data: normalizeSensorsPayload(cached?.data ?? null),
+      fetched_at: fetchedAt,
+      stale: false,
+    };
+  }
+
+  const stale = isSensorsCacheStale(cached);
+  if (stale && ctx) {
+    ctx.waitUntil(refreshSensorsToKV(env));
+  }
+
+  return {
+    data: normalizeSensorsPayload(cached.data),
+    fetched_at: cached.fetched_at,
+    stale,
+  };
 }
 
 async function readSensorsFromKV(env) {
@@ -1285,7 +1364,16 @@ async function readSensorsFromKV(env) {
   }
 }
 
-async function refreshSensorsToKV(env) {
+async function refreshSensorsToKV(env, options = {}) {
+  const force = options.force === true;
+  if (!force) {
+    const inflight = await env.LOCK_STATE.get(SENSORS_REFRESH_INFLIGHT_KEY);
+    if (inflight) return;
+    await env.LOCK_STATE.put(SENSORS_REFRESH_INFLIGHT_KEY, "1", {
+      expirationTtl: SENSORS_REFRESH_INFLIGHT_TTL_SEC,
+    });
+  }
+
   try {
     const resp = await withTimeout(
       fetch(SENSORS_API_URL),
@@ -1303,6 +1391,10 @@ async function refreshSensorsToKV(env) {
     );
   } catch {
     // 上游壞掉就不寫 KV，舊值保留；下次 request 仍會嘗試補
+  } finally {
+    if (!force) {
+      await env.LOCK_STATE.delete(SENSORS_REFRESH_INFLIGHT_KEY).catch(() => {});
+    }
   }
 }
 
