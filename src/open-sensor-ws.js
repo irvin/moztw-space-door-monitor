@@ -154,3 +154,64 @@ export async function waitForFirstWsCapture(getCaptured, timeoutMs, label) {
     `等待 ${label || "WebSocket PubedCompanyDevice"} 逾時（${timeoutMs}ms）`,
   );
 }
+
+/**
+ * 與 page.goto 並行等待 WebSocket；收到目標 frame 後儘早返回。
+ * @param {import("@cloudflare/playwright").Page} page
+ * @param {() => { status: string; raw: string }|null} getCaptured
+ * @param {number} timeoutMs
+ * @param {{ gotoUrl: string; isLoginPath: (url: string) => boolean; reloginMessage?: string }} options
+ */
+export async function waitForOpenSensorWithNavigationRace(
+  page,
+  getCaptured,
+  timeoutMs,
+  { gotoUrl, isLoginPath, reloginMessage = "需要重新登入：目前網址為 /login" },
+) {
+  const label = "WebSocket PubedCompanyDevice（工寮 Open Sensor）";
+  const deadline = Date.now() + timeoutMs;
+  /** @type {Error|null} */
+  let gotoError = null;
+  let gotoSettled = false;
+
+  const assertNotOnLogin = (url) => {
+    if (isLoginPath(url)) {
+      throw new Error(reloginMessage);
+    }
+  };
+
+  page
+    .goto(gotoUrl, { waitUntil: "domcontentloaded" })
+    .then(() => {
+      gotoSettled = true;
+    })
+    .catch((err) => {
+      gotoError = err instanceof Error ? err : new Error(String(err));
+      gotoSettled = true;
+    });
+
+  while (Date.now() < deadline) {
+    assertNotOnLogin(page.url());
+
+    const captured = getCaptured();
+    if (captured) {
+      if (gotoSettled && gotoError) throw gotoError;
+      assertNotOnLogin(page.url());
+      return captured;
+    }
+
+    if (gotoSettled) {
+      if (gotoError) throw gotoError;
+      assertNotOnLogin(page.url());
+      break;
+    }
+
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new Error(`等待 ${label} 逾時（${timeoutMs}ms）`);
+  }
+  return waitForFirstWsCapture(getCaptured, remaining, label);
+}

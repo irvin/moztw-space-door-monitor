@@ -3,7 +3,7 @@ import {
   OPEN_SENSOR_DEVICE_UUID_DEFAULT,
   WS_STATUS_TIMEOUT_MS_DEFAULT,
   attachOpenSensorWebSocketListener,
-  waitForFirstWsCapture,
+  waitForOpenSensorWithNavigationRace,
 } from "./open-sensor-ws.js";
 
 const STATUS_URL_DEFAULT = "https://biz.candyhouse.co";
@@ -784,7 +784,7 @@ async function publishEffectiveStatusChange(env, ctx, status) {
  * @returns {Promise<{ conflict: boolean; conflictMessage?: string }>}
  */
 async function processEffectiveStatusAndNotify(env, ctx, input) {
-  const sensors = await getSensorsData(env);
+  const sensors = input.sensors ?? (await getSensorsData(env));
   const lastStatus = await env.LOCK_STATE.get("last_status");
   const candyForCombine = input.freshCandyStatus ?? lastStatus;
   const overrideActive =
@@ -860,14 +860,17 @@ async function runMonitor(env, ctx) {
 
     let freshCandyStatus = null;
     let candyFetchFailed = false;
+    const sensorsPromise = getSensorsData(env);
     try {
       freshCandyStatus = await fetchLockStatusWithSessionOnly(env);
       await env.LOCK_STATE.put("last_status", freshCandyStatus);
     } catch (err) {
       candyFetchFailed = true;
+      const sensors = await sensorsPromise;
       const result = await processEffectiveStatusAndNotify(env, ctx, {
         freshCandyStatus: null,
         candyFetchFailed: true,
+        sensors,
       });
       const msg = err instanceof Error ? err.message : String(err);
       await markRunFail(
@@ -885,9 +888,11 @@ async function runMonitor(env, ctx) {
       return;
     }
 
+    const sensors = await sensorsPromise;
     const result = await processEffectiveStatusAndNotify(env, ctx, {
       freshCandyStatus,
       candyFetchFailed: false,
+      sensors,
     });
     if (result.conflict) {
       await markRunFail(
@@ -980,23 +985,15 @@ async function fetchLockStatusWithSessionOnly(env) {
 
       try {
         await saveRunStage(env, "open_status_page");
-        await page.goto(STATUS_URL_DEFAULT, { waitUntil: "domcontentloaded" });
-        await ensureNotOnLoginPage(page);
-        if (env.STATUS_READY_SELECTOR) {
-          await saveRunStage(env, "wait_status_ready_selector");
-          await waitForAnySelector(
-            page,
-            [env.STATUS_READY_SELECTOR],
-            "狀態頁 ready selector",
-            Number(env.STATUS_READY_TIMEOUT_MS || 15000),
-          );
-        }
-        await ensureNotOnLoginPage(page);
-        await saveRunStage(env, "wait_ws_device_list");
-        const { status, raw } = await waitForFirstWsCapture(
+        const { status, raw } = await waitForOpenSensorWithNavigationRace(
+          page,
           wsListener.getCaptured,
           wsTimeoutMs,
-          "WebSocket PubedCompanyDevice（工寮 Open Sensor）",
+          {
+            gotoUrl: STATUS_URL_DEFAULT,
+            isLoginPath: isBizLoginPath,
+            reloginMessage: RELOGIN_REQUIRED_ERROR_MESSAGE,
+          },
         );
         await env.LOCK_STATE.put("last_raw_status", raw);
         await persistSessionCookies(context, env);
