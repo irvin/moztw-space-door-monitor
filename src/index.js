@@ -726,9 +726,13 @@ export default {
           "access-control-allow-origin": "*",
         },
       });
-      resp.headers.set("Cache-Control", "public, max-age=300, s-maxage=300");
-      if (ctx) {
-        ctx.waitUntil(cache.put(request, resp.clone()));
+      if (sensorsResult.stale) {
+        resp.headers.set("Cache-Control", "no-store");
+      } else {
+        resp.headers.set("Cache-Control", "public, max-age=300, s-maxage=300");
+        if (ctx) {
+          ctx.waitUntil(cache.put(request, resp.clone()));
+        }
       }
       return resp;
     }
@@ -1278,21 +1282,16 @@ function isSensorsCacheStale(cached) {
 function resolveApiOpenState(status, sensors, overrideActive, sensorsStale) {
   if (sensorsStale) {
     const conflict = status.last_sensor_conflict_active === "1";
-    if (conflict) {
-      const open =
-        status.last_effective_status === "OPEN"
-          ? true
-          : status.last_effective_status === "CLOSED"
-            ? false
-            : undefined;
-      return { open, conflict: true };
+    if (overrideActive) {
+      return { open: false, conflict };
     }
-    let resolution = resolveEffectiveDoorState(status.last_status, sensors);
-    resolution = applyManualClosedOverride(resolution, overrideActive);
-    const open = resolution.status
-      ? resolution.status === "OPEN"
-      : undefined;
-    return { open, conflict: false };
+    const open =
+      status.last_effective_status === "OPEN"
+        ? true
+        : status.last_effective_status === "CLOSED"
+          ? false
+          : undefined;
+    return { open, conflict };
   }
 
   let resolution = resolveEffectiveDoorState(status.last_status, sensors);
