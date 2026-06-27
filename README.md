@@ -273,8 +273,6 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 |------|------|------|
 | `OPEN_SENSOR_DEVICE_UUID` | `11200423-…` | 工寮 Candy House Open Sensor UUID |
 | `WS_STATUS_TIMEOUT_MS` | `30000` | 等待 WebSocket 裝置列表逾時 |
-| `STATUS_READY_SELECTOR` | — | 狀態頁 ready selector（選用） |
-| `STATUS_READY_TIMEOUT_MS` | `15000` | ready selector 逾時 |
 | `SESSION_COOKIE_TTL_SEC` | 7 天 | session KV TTL |
 | `BROWSER_INIT_RETRY` | `3` | Browser 啟動重試次數 |
 | `BROWSER_INIT_TIMEOUT_MS` | `30000` | Browser 啟動逾時 |

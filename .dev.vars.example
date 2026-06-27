@@ -1,6 +1,3 @@
-# local-test.js（npm run session:update）：LOCK_STATE KV namespace id（選用，預設自 wrangler.toml 讀取）
-# LOCK_STATE_KV_NAMESPACE_ID="c643dd3deb164473ab7df3c79f4baeac"
-
 # session KV TTL（秒，選用；預設 7 天，與 Worker SESSION_COOKIE_TTL_SEC 對齊）
 # SESSION_COOKIE_TTL_SEC="604800"
 

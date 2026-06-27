@@ -42,7 +42,6 @@ const {
   WS_STATUS_TIMEOUT_MS,
   SESSION_LOGIN_TIMEOUT_MS,
   SESSION_POLL_INTERVAL_MS,
-  LOCK_STATE_KV_NAMESPACE_ID,
   SESSION_COOKIE_TTL_SEC,
   SESSION_LOGIN_STABLE_POLLS,
 } = process.env;
@@ -65,10 +64,8 @@ function logSessionEvent(event, detail = {}) {
   console.log(`SESSION_${event}:`, JSON.stringify(detail));
 }
 
-function readLockStateKvNamespaceId() {
-  if (LOCK_STATE_KV_NAMESPACE_ID) {
-    return LOCK_STATE_KV_NAMESPACE_ID;
-  }
+/** 自 wrangler.toml LOCK_STATE binding 讀 namespace id（僅供 log 確認）。 */
+function readLockStateKvNamespaceIdFromWranglerToml() {
   const tomlPath = join(PROJECT_ROOT, "wrangler.toml");
   const toml = fs.readFileSync(tomlPath, "utf8");
   const blocks = toml.split("[[kv_namespaces]]");
@@ -129,7 +126,7 @@ async function saveSessionToKv(cookies, localStorageEntries) {
     throw new Error("cookies 必須是非空陣列");
   }
 
-  const namespaceId = readLockStateKvNamespaceId();
+  const namespaceId = readLockStateKvNamespaceIdFromWranglerToml();
   const expirationTtl = Math.max(
     60,
     Number(SESSION_COOKIE_TTL_SEC || SESSION_COOKIE_TTL_SEC_DEFAULT),
@@ -233,14 +230,14 @@ async function main() {
     5000,
     Number(WS_STATUS_TIMEOUT_MS || WS_STATUS_TIMEOUT_MS_DEFAULT),
   );
-  const kvNamespaceId = readLockStateKvNamespaceId();
+  const kvNamespaceId = readLockStateKvNamespaceIdFromWranglerToml();
 
   console.log("使用設定：");
   console.log(`LOGIN_URL = ${LOGIN_URL_DEFAULT}`);
   console.log(`STATUS_URL = ${STATUS_URL_DEFAULT}`);
   console.log(`OPEN_SENSOR_DEVICE_UUID = ${deviceUuid}`);
   console.log(`WS_STATUS_TIMEOUT_MS = ${wsTimeoutMs}`);
-  console.log(`LOCK_STATE_KV_NAMESPACE_ID = ${kvNamespaceId}`);
+  console.log(`LOCK_STATE KV namespace id（wrangler.toml）= ${kvNamespaceId}`);
   console.log("");
 
   const browser = await chromium.launch({ headless: false });
@@ -249,7 +246,7 @@ async function main() {
 
   /** @type {{ ok: boolean; error?: string; upload_method?: string; kv_namespace_id?: string; cookies_count?: number; local_storage_count?: number }} */
   let importResult = { ok: false };
-  let sessionCaptured = false;
+  let keepBrowserOpen = false;
 
   try {
     console.log("打開登入頁...");
@@ -277,7 +274,6 @@ async function main() {
       }
       return items;
     });
-    sessionCaptured = true;
 
     try {
       importResult = await saveSessionToKv(cookies, localStorageEntries);
@@ -300,18 +296,18 @@ async function main() {
     });
 
     if (!importResult.ok) {
+      keepBrowserOpen = true;
       process.exitCode = 1;
     }
   } finally {
     wsListener.detach();
-    if (sessionCaptured && !importResult.ok) {
+    if (keepBrowserOpen) {
       console.log("寫入 KV 失敗，瀏覽器保持開啟；請修正後重跑 npm run session:update。");
       return;
     }
     console.log("關閉瀏覽器...");
     await page.close().catch(() => {});
     await browser.close().catch(() => {});
-    process.exit(process.exitCode || 0);
   }
 }
 
