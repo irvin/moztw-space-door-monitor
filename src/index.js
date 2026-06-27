@@ -166,6 +166,13 @@ const BROWSER_BLOCKED_REQUEST_HOSTS = [
   "fonts.googleapis.com"
 ];
 
+/** 以 Playwright resourceType 擋掉的非必要資源（不影響 WebSocket 擷取） */
+const BROWSER_BLOCKED_RESOURCE_TYPES = new Set(["image"]);
+
+function shouldBlockRequestResourceType(resourceType) {
+  return BROWSER_BLOCKED_RESOURCE_TYPES.has(String(resourceType || "").toLowerCase());
+}
+
 function shouldBlockRequestHostname(hostname) {
   const h = String(hostname || "").toLowerCase();
   if (!h) return false;
@@ -175,14 +182,31 @@ function shouldBlockRequestHostname(hostname) {
 }
 
 /**
- * 在 goto 前註冊；以 hostname 比對，避免誤擋 URL 路徑內含字串。
+ * 在 goto 前註冊；以 resourceType 與 hostname 比對，避免載入非必要資源。
  * @param {import("@cloudflare/playwright").Page} page
  */
 async function installThirdPartyRequestBlocking(page) {
   await page.route("**/*", (route) => {
+    let request;
+    try {
+      request = route.request();
+    } catch {
+      route.continue().catch(() => {});
+      return;
+    }
+
+    try {
+      if (shouldBlockRequestResourceType(request.resourceType())) {
+        route.abort().catch(() => {});
+        return;
+      }
+    } catch {
+      // resourceType 不可用時改走 hostname 檢查
+    }
+
     let url;
     try {
-      url = route.request().url();
+      url = request.url();
     } catch {
       route.continue().catch(() => {});
       return;
