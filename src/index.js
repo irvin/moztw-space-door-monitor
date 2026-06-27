@@ -848,9 +848,10 @@ async function runMonitor(env, ctx) {
   try {
     const monitoringMode = await getMonitoringMode(env);
     if (monitoringMode === MONITORING_MODE_MANUAL_OPEN_MUTED) {
-      await saveRunStage(env, "skipped_sensor_muted");
-      await env.LOCK_STATE.put("last_status", "OPEN");
-      await env.LOCK_STATE.put("last_effective_status", "OPEN");
+      await Promise.all([
+        putIfChanged(env, "last_status", "OPEN"),
+        putIfChanged(env, "last_effective_status", "OPEN"),
+      ]);
       await markRunFinish(env);
       if (ctx) {
         ctx.waitUntil(invalidateStatusHtmlCache());
@@ -863,7 +864,7 @@ async function runMonitor(env, ctx) {
     const sensorsPromise = getSensorsData(env);
     try {
       freshCandyStatus = await fetchLockStatusWithSessionOnly(env);
-      await env.LOCK_STATE.put("last_status", freshCandyStatus);
+      await putIfChanged(env, "last_status", freshCandyStatus);
     } catch (err) {
       candyFetchFailed = true;
       const sensors = await sensorsPromise;
@@ -923,7 +924,6 @@ async function runMonitor(env, ctx) {
 }
 
 async function fetchLockStatusWithSessionOnly(env) {
-  await saveRunStage(env, "browser_launch");
   const maxRetries = getBrowserInitMaxRetries(env);
   const maxAttempts = maxRetries + 1;
   const initTimeoutMs = Math.max(5000, Number(env.BROWSER_INIT_TIMEOUT_MS || 30000));
@@ -932,7 +932,6 @@ async function fetchLockStatusWithSessionOnly(env) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let browser;
     try {
-      await saveRunStage(env, `browser_launch_attempt_${attempt}`);
       browser = await withTimeout(
         launch(env.MYBROWSER),
         initTimeoutMs,
@@ -984,7 +983,6 @@ async function fetchLockStatusWithSessionOnly(env) {
       }
 
       try {
-        await saveRunStage(env, "open_status_page");
         const { status, raw } = await waitForOpenSensorWithNavigationRace(
           page,
           wsListener.getCaptured,
@@ -995,9 +993,8 @@ async function fetchLockStatusWithSessionOnly(env) {
             reloginMessage: RELOGIN_REQUIRED_ERROR_MESSAGE,
           },
         );
-        await env.LOCK_STATE.put("last_raw_status", raw);
+        await putIfChanged(env, "last_raw_status", raw);
         await persistSessionCookies(context, env);
-        await saveRunStage(env, `status=${status}`);
         return status;
       } finally {
         wsListener.detach();
@@ -1009,7 +1006,6 @@ async function fetchLockStatusWithSessionOnly(env) {
         throw err;
       }
       const delayMs = getBrowserInitRetryDelayMs(env, attempt);
-      await saveRunStage(env, `browser_init_retry_${attempt}_of_${maxRetries}_wait_${delayMs}ms`);
       await sleep(delayMs);
     } finally {
       if (browser) {
@@ -1404,8 +1400,16 @@ function json(data, status = 200) {
   });
 }
 
-async function saveRunStage(env, stage) {
-  await env.LOCK_STATE.put("last_run_stage", stage);
+/** @returns {Promise<boolean>} true 表示已寫入 */
+async function putIfChanged(env, key, nextValue, options) {
+  const prev = await env.LOCK_STATE.get(key);
+  if (prev === nextValue) return false;
+  if (options) {
+    await env.LOCK_STATE.put(key, nextValue, options);
+  } else {
+    await env.LOCK_STATE.put(key, nextValue);
+  }
+  return true;
 }
 
 async function markRunStart(env, runId) {
