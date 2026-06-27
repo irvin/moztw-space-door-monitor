@@ -1,5 +1,16 @@
-# 匯入 session 時 POST 的目標（選用）。未設定時 local-test.js 預設為 http://localhost:8787/import-session
-SESSION_IMPORT_URL="http://localhost:8787/import-session"
+# local-test.js（npm run session:update）：LOCK_STATE KV namespace id（選用，預設自 wrangler.toml 讀取）
+# LOCK_STATE_KV_NAMESPACE_ID="c643dd3deb164473ab7df3c79f4baeac"
+
+# session KV TTL（秒，選用；預設 7 天，與 Worker SESSION_COOKIE_TTL_SEC 對齊）
+# SESSION_COOKIE_TTL_SEC="604800"
+
+# local-test.js：連續 N 次輪詢皆不在 /login 才視為登入完成（預設 3）
+# SESSION_LOGIN_STABLE_POLLS="3"
+
+# SESSION_LOGIN_TIMEOUT_MS="600000"
+
+# local-test.js：輪詢是否已離開 /login 的間隔（毫秒，預設 2000）
+# SESSION_POLL_INTERVAL_MS="2000"
 
 # 工寮 Open Sensor deviceUUID（選用，預設見 src/open-sensor-ws.js）
 # OPEN_SENSOR_DEVICE_UUID="11200423-0300-0214-F000-4E00FFFFFFFF"

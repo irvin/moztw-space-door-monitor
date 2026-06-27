@@ -6,8 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "local:test": "node local-test.js",
-    "local:test:prod": "SESSION_IMPORT_URL=https://door-lock-monitor.irvinfly.workers.dev/import-session node local-test.js"
+    "session:update": "node local-test.js"
   },
   "dependencies": {
     "@cloudflare/playwright": "^0.0.10",
