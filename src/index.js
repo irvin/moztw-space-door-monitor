@@ -752,10 +752,9 @@ export default {
 const SENSOR_CONFLICT_RECOVERY_MESSAGE = "感測器狀態已恢復一致";
 
 async function notifySensorConflict(env, conflictMessage) {
-  const channel = await getAnnouncementChannelOrNotify();
-  if (!channel || !conflictMessage) return;
+  if (!conflictMessage) return;
   if (await shouldNotifyConflict(env, conflictMessage)) {
-    await sendTelegramToChat(env, channel, conflictMessage);
+    await sendTelegram(env, conflictMessage);
   }
 }
 
@@ -826,10 +825,7 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
   if (hadConflictActive === "1") {
     await env.LOCK_STATE.delete("last_sensor_conflict_active");
     await env.LOCK_STATE.delete("last_conflict_notified");
-    const channel = await getAnnouncementChannelOrNotify();
-    if (channel) {
-      await sendTelegramToChat(env, channel, SENSOR_CONFLICT_RECOVERY_MESSAGE);
-    }
+    await sendTelegram(env, SENSOR_CONFLICT_RECOVERY_MESSAGE);
   }
 
   if (resolution.status && resolution.status !== prevEffective) {

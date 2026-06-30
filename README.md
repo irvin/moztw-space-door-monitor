@@ -52,11 +52,11 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 | 條件 | 行為 |
 |------|------|
 | CH **OPEN** + SB **close**，或 CH **CLOSED** + SB **open** | **不做開關門判斷**（不更新 `last_effective_status`） |
-| 通知 | 發送至公告頻道 `@moztw_general`（同一則訊息只通知一次） |
+| 通知 | 發送至主群組 `TELEGRAM_CHAT_ID`（同一則訊息只通知一次） |
 | Cron | **照常執行**，不進入隔離模式 |
 | API | `state.sensor_conflict: true`；`state.open` 沿用上次有效值 |
 
-衝突解除（兩邊讀數一致）時，公告頻道會收到 `感測器狀態已恢復一致`，之後恢復正常開關門通知。
+衝突解除（兩邊讀數一致）時，主群組會收到 `感測器狀態已恢復一致`，之後恢復正常開關門通知。
 
 ## 監控模式與手動指令
 
@@ -122,8 +122,8 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 
 | 目標 | 用途 |
 |------|------|
-| `TELEGRAM_CHAT_ID`（secret） | 主群組：開關門狀態、監控錯誤、指令回覆 |
-| `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`（程式常數 `@moztw_general`） | 公告頻道：開關門公告、頻道標題、感測器衝突錯誤 |
+| `TELEGRAM_CHAT_ID`（secret） | 主群組：開關門狀態、監控錯誤（含感測器衝突）、指令回覆 |
+| `TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`（程式常數 `@moztw_general`） | 公告頻道：開關門公告、頻道標題 |
 
 ### 自動通知規則
 
@@ -131,7 +131,7 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
   - 主群組：`工寮大門：已開啟` / `工寮大門：已關閉`
   - 公告頻道：`#工寮開門 …（by 大門感應器）` 或 `#工寮關門 …`；開門時頻道標題 `Moz://TW（工寮開放中）`，關門 `Moz://TW`
 - **手動 `/manual_open` / `/manual_close`**：公告頻道改為 `（by @username）`；主群組在狀態實際變更時亦會收到開關門訊息
-- **感測器衝突**：僅公告頻道；不更新 `last_effective_status`；Cron 不停止
+- **感測器衝突**：主群組；不更新 `last_effective_status`；Cron 不停止
 - **Candy House 讀取失敗**：主群組 `門鎖監控錯誤：…`（去重）；SwitchBot 仍可參與合併；Cron 不停止
 - **Session 失效**（`/login`）：`門鎖監控需要重新登入，請重新匯入 session`
 - **Candy House 恢復成功**：先發 `門鎖監控已恢復正常`，再依合併狀態處理開關門
