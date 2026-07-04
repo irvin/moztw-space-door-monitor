@@ -18,6 +18,8 @@ const TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID = "@moztw_general";
 const TELEGRAM_BOT_USERNAME = "moztw_space_new_event_bot";
 /** 自動感測觸發之公告頻道訊息結尾（非手動指令） */
 const SENSOR_ANNOUNCEMENT_BYLINE = "（by 大門感應器）";
+const LAST_ERROR_NOTIFIED_KEY_KV = "last_error_notified_key";
+const SENSOR_CONFLICT_NOTIFY_KEY = "sensor_conflict";
 
 const SENSORS_KV_KEY = "sensors_cache";
 const SENSORS_REFRESH_INFLIGHT_KEY = "sensors_refresh_inflight";
@@ -753,7 +755,7 @@ const SENSOR_CONFLICT_RECOVERY_MESSAGE = "感測器狀態已恢復一致";
 
 async function notifySensorConflict(env, conflictMessage) {
   if (!conflictMessage) return;
-  if (await shouldNotifyConflict(env, conflictMessage)) {
+  if (await shouldNotifyConflict(env)) {
     await sendTelegram(env, conflictMessage);
   }
 }
@@ -805,12 +807,12 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
   }
 
   const prevEffective = await env.LOCK_STATE.get("last_effective_status");
-  const hadErrorNotified = await env.LOCK_STATE.get("last_error_notified");
+  const hadErrorNotified = await hasActiveMonitorErrorNotification(env);
   const hadConflictActive = await env.LOCK_STATE.get("last_sensor_conflict_active");
 
   if (!input.candyFetchFailed && hadErrorNotified) {
     await sendTelegram(env, "門鎖監控已恢復正常");
-    await env.LOCK_STATE.delete("last_error_notified");
+    await clearMonitorErrorNotification(env);
   }
 
   if (resolution.conflict) {
@@ -879,12 +881,7 @@ async function runMonitor(env, ctx) {
         result.conflict ? result.conflictMessage || "感測器狀態不一致" : msg,
       );
       if (!result.conflict) {
-        const telegramErrorText = isReloginRequiredError(msg)
-          ? RELOGIN_REQUIRED_TELEGRAM_MESSAGE
-          : `門鎖監控錯誤：${msg}`;
-        if (await shouldNotifyError(env, telegramErrorText)) {
-          await sendTelegram(env, telegramErrorText);
-        }
+        await notifyMonitorErrorIfNeeded(env, msg);
       }
       return;
     }
@@ -907,12 +904,7 @@ async function runMonitor(env, ctx) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await markRunFail(env, msg);
-    const telegramErrorText = isReloginRequiredError(msg)
-      ? RELOGIN_REQUIRED_TELEGRAM_MESSAGE
-      : `門鎖監控錯誤：${msg}`;
-    if (await shouldNotifyError(env, telegramErrorText)) {
-      await sendTelegram(env, telegramErrorText);
-    }
+    await notifyMonitorErrorIfNeeded(env, msg);
     throw err;
   } finally {
     await Promise.all([
@@ -1410,21 +1402,57 @@ async function invalidateStatusHtmlCache() {
   );
 }
 
-async function shouldNotifyError(env, msg) {
-  const prev = await env.LOCK_STATE.get("last_error_notified");
-  if (prev && prev === msg) {
-    return false;
+/**
+ * @param {string} rawMessage
+ * @returns {"relogin"|"ws_timeout"|"browser_init"|"other"}
+ */
+function classifyMonitorErrorKey(rawMessage) {
+  const msg = String(rawMessage || "");
+  if (isReloginRequiredError(msg)) return "relogin";
+  if (msg.includes("WebSocket PubedCompanyDevice") && msg.includes("逾時")) {
+    return "ws_timeout";
   }
-  await env.LOCK_STATE.put("last_error_notified", msg || "");
+  if (isBrowserInitErrorMessage(msg)) return "browser_init";
+  return "other";
+}
+
+function buildMonitorErrorTelegramText(rawMessage) {
+  const msg = String(rawMessage || "");
+  if (isReloginRequiredError(msg)) return RELOGIN_REQUIRED_TELEGRAM_MESSAGE;
+  return `門鎖監控錯誤：${msg}`;
+}
+
+async function hasActiveMonitorErrorNotification(env) {
+  const key = await env.LOCK_STATE.get(LAST_ERROR_NOTIFIED_KEY_KV);
+  if (key) return true;
+  return Boolean(await env.LOCK_STATE.get("last_error_notified"));
+}
+
+async function clearMonitorErrorNotification(env) {
+  await Promise.all([
+    env.LOCK_STATE.delete(LAST_ERROR_NOTIFIED_KEY_KV),
+    env.LOCK_STATE.delete("last_error_notified"),
+  ]);
+}
+
+async function shouldNotifyError(env, rawMessage) {
+  const key = classifyMonitorErrorKey(rawMessage);
+  const prev = await env.LOCK_STATE.get(LAST_ERROR_NOTIFIED_KEY_KV);
+  if (prev === key) return false;
+  await env.LOCK_STATE.put(LAST_ERROR_NOTIFIED_KEY_KV, key);
   return true;
 }
 
-async function shouldNotifyConflict(env, msg) {
-  const prev = await env.LOCK_STATE.get("last_conflict_notified");
-  if (prev && prev === msg) {
-    return false;
+async function notifyMonitorErrorIfNeeded(env, rawMessage) {
+  if (await shouldNotifyError(env, rawMessage)) {
+    await sendTelegram(env, buildMonitorErrorTelegramText(rawMessage));
   }
-  await env.LOCK_STATE.put("last_conflict_notified", msg || "");
+}
+
+async function shouldNotifyConflict(env) {
+  const prev = await env.LOCK_STATE.get("last_conflict_notified");
+  if (prev === SENSOR_CONFLICT_NOTIFY_KEY) return false;
+  await env.LOCK_STATE.put("last_conflict_notified", SENSOR_CONFLICT_NOTIFY_KEY);
   return true;
 }
 
@@ -1448,9 +1476,8 @@ async function withTimeout(promise, timeoutMs, label) {
   }
 }
 
-function isRetryableBrowserInitError(err) {
-  const msg = err instanceof Error ? err.message : String(err || "");
-  const text = msg.toLowerCase();
+function isBrowserInitErrorMessage(message) {
+  const text = String(message || "").toLowerCase();
   return (
     text.includes("unable to create new browser") ||
     text.includes("no browser available") ||
@@ -1463,6 +1490,11 @@ function isRetryableBrowserInitError(err) {
     text.includes("browser newcontext timeout") ||
     text.includes("browser newpage timeout")
   );
+}
+
+function isRetryableBrowserInitError(err) {
+  const msg = err instanceof Error ? err.message : String(err || "");
+  return isBrowserInitErrorMessage(msg);
 }
 
 function getBrowserInitRetryDelayMs(env, attempt) {

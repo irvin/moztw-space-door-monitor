@@ -140,18 +140,20 @@ export function attachOpenSensorWebSocketListener(page, deviceUuid) {
 
 /**
  * @param {() => { status: string; raw: string }|null} getCaptured
- * @param {number} timeoutMs
+ * @param {number} waitMs 實際等待時間（毫秒）
  * @param {string} [label]
+ * @param {number} [errorReportMs] 逾時錯誤訊息中顯示的設定 timeout（預設同 waitMs）
  */
-export async function waitForFirstWsCapture(getCaptured, timeoutMs, label) {
-  const deadline = Date.now() + timeoutMs;
+export async function waitForFirstWsCapture(getCaptured, waitMs, label, errorReportMs) {
+  const reportMs = errorReportMs ?? waitMs;
+  const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     const value = getCaptured();
     if (value) return value;
     await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error(
-    `等待 ${label || "WebSocket PubedCompanyDevice"} 逾時（${timeoutMs}ms）`,
+    `等待 ${label || "WebSocket PubedCompanyDevice"} 逾時（${reportMs}ms）`,
   );
 }
 
@@ -213,5 +215,5 @@ export async function waitForOpenSensorWithNavigationRace(
   if (remaining <= 0) {
     throw new Error(`等待 ${label} 逾時（${timeoutMs}ms）`);
   }
-  return waitForFirstWsCapture(getCaptured, remaining, label);
+  return waitForFirstWsCapture(getCaptured, remaining, label, timeoutMs);
 }
