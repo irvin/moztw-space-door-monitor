@@ -163,7 +163,6 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 | GET | `/status` | JSON 狀態；`Accept: text/html` 時回 HTML（快取 15 分鐘） |
 | GET | `/api` | 對外 Space API（快取 5 分鐘） |
 | POST | `/run` | 手動執行一輪監控 |
-| POST | `/import-session` | 寫入 session（舊本機匯入路徑；`session:update` 改走 wrangler KV） |
 | POST | `/telegram-webhook` | Telegram Webhook（需 `X-Telegram-Bot-Api-Secret-Token`） |
 
 自訂網域（`wrangler.toml`）：`https://moztw.space/status`、`/api`、`/telegram-webhook`。
@@ -215,7 +214,7 @@ npm run session:update            # 登入後直接寫入 LOCK_STATE KV（不經
 
 1. 腳本開啟瀏覽器至 Candy House 登入頁，請**手動登入**。
 2. 登入成功後會**自動偵測**（URL 離開 `/login`），接著擷取 WebSocket 狀態。
-3. 以 `wrangler kv key put` 寫入 `session_cookies` / `session_local_storage`（與 Worker `/import-session` 相同鍵名與 TTL）。
+3. 以 `wrangler kv key put` 寫入 Worker 讀取的 `session_cookies` / `session_local_storage` 鍵，並設定 TTL。
 4. 終端機輸出 `SESSION_IMPORT_RESULT:` JSON；`ok: true` 表示 KV 寫入成功。
 
 > `workers.dev` 可維持 Cloudflare Access restrict；`session:update` 不會 POST 到公開 URL。
@@ -232,7 +231,7 @@ npm run session:update         # 登入並寫入正式 LOCK_STATE KV（wrangler�
 
 node --check src/index.js
 node --check src/open-sensor-ws.js
-node --check local-test.js
+node --check update-session.js
 npx wrangler deploy --dry-run
 ```
 
@@ -284,7 +283,7 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 - **SwitchBot 無資料**：確認 `https://moztw-co2.yuaner.tw/sensors` 含 `door_open`。
 - **感測器衝突**：兩邊讀數矛盾時刻意不判斷；請至現場或 Candy House / SwitchBot 確認實際狀態。
 - **Browser 503**：同一輪內會重試；重試完仍失敗才通知，下一輪 Cron 仍會執行。
-- **本機除錯**：`local-test.js` 與 Worker 共用 `src/open-sensor-ws.js`。
+- **Session 更新除錯**：`update-session.js` 與 Worker 共用 `src/open-sensor-ws.js`。
 
 ## 主要檔案
 
@@ -292,6 +291,6 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 |------|------|
 | `src/index.js` | Worker 主程式（合併邏輯、排程、API、Telegram） |
 | `src/open-sensor-ws.js` | Candy House WebSocket 解析與 Playwright 旁聽 |
-| `local-test.js` | 本機登入與 session 匯入 |
+| `update-session.js` | 本機登入與 session 匯入 |
 | `wrangler.toml` | Worker 綁定、cron、路由 |
 | `.dev.vars.example` | 本機環境變數範本 |

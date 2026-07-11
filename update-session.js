@@ -117,7 +117,7 @@ async function wranglerKvDelete(key) {
 }
 
 /**
- * 與 Worker /import-session 相同：寫入 session_cookies；localStorage 空則刪除鍵。
+ * 寫入 Worker 讀取的 session_cookies；localStorage 空則刪除鍵。
  * @param {unknown[]} cookies
  * @param {{ key: string; value: string | null }[]} localStorageEntries
  */
@@ -315,6 +315,6 @@ main().catch((err) => {
   logSessionEvent("FAILED", {
     error: err instanceof Error ? err.message : String(err),
   });
-  console.error("local-test.js 發生錯誤：", err);
+  console.error("update-session.js 發生錯誤：", err);
   process.exit(1);
 });

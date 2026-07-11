@@ -590,30 +590,6 @@ export default {
       }
     }
 
-    if (url.pathname === "/import-session" && request.method === "POST") {
-      const body = await request.json().catch(() => ({}));
-      const cookies = body?.cookies;
-      const localStorage = body?.localStorage;
-      if (!Array.isArray(cookies) || cookies.length === 0) {
-        return json({ ok: false, message: "cookies 必須是非空陣列" }, 400);
-      }
-      await env.LOCK_STATE.put("session_cookies", JSON.stringify(cookies), {
-        expirationTtl: Number(env.SESSION_COOKIE_TTL_SEC || 7 * 24 * 3600),
-      });
-      if (Array.isArray(localStorage) && localStorage.length > 0) {
-        await env.LOCK_STATE.put("session_local_storage", JSON.stringify(localStorage), {
-          expirationTtl: Number(env.SESSION_COOKIE_TTL_SEC || 7 * 24 * 3600),
-        });
-      } else {
-        await env.LOCK_STATE.delete("session_local_storage");
-      }
-      return json({
-        ok: true,
-        cookies_count: cookies.length,
-        local_storage_count: Array.isArray(localStorage) ? localStorage.length : 0,
-      });
-    }
-
     if (url.pathname === "/status" && request.method === "GET") {
       const accept = request.headers.get("Accept") || "";
       const wantsHtml = accept.includes("text/html");
