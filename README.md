@@ -158,8 +158,8 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/status` | JSON 狀態；`Accept: text/html` 時回 HTML（快取 15 分鐘） |
-| GET | `/api` | 對外 Space API（快取 5 分鐘） |
+| GET | `/status` | JSON 或（`Accept: text/html` 時）HTML 狀態，Workers Cache 5 分鐘（`Vary: Accept`） |
+| GET | `/api` | 對外 Space API（Workers Cache 5 分鐘；感測資料 stale 時不快取） |
 | POST | `/run` | 手動執行一輪監控 |
 | POST | `/telegram-webhook` | Telegram Webhook（需 `X-Telegram-Bot-Api-Secret-Token`） |
 

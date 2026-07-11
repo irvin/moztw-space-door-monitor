@@ -3,6 +3,9 @@ main = "src/index.js"
 compatibility_date = "2025-12-01"
 compatibility_flags = ["nodejs_compat"]
 
+[cache]
+enabled = true
+
 [limits]
 cpu_ms = 500
 

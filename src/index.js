@@ -20,6 +20,8 @@ const TELEGRAM_BOT_USERNAME = "moztw_space_new_event_bot";
 const SENSOR_ANNOUNCEMENT_BYLINE = "（by 大門感應器）";
 const LAST_ERROR_NOTIFIED_KEY_KV = "last_error_notified_key";
 const SENSOR_CONFLICT_NOTIFY_KEY = "sensor_conflict";
+const STATUS_CACHE_TAG = "door-monitor-status";
+const API_CACHE_TAG = "door-monitor-api";
 
 const SENSORS_KV_KEY = "sensors_cache";
 const SENSORS_REFRESH_INFLIGHT_KEY = "sensors_refresh_inflight";
@@ -472,7 +474,7 @@ async function handleTelegramWebhook(request, env, ctx) {
 
       await sendTelegramToChat(env, allowedChat, bodyText, replyOpts);
       if (ctx) {
-        ctx.waitUntil(invalidateStatusHtmlCache());
+        ctx.waitUntil(invalidatePublicResponseCache(ctx));
       }
       return json({ ok: true });
     }
@@ -524,7 +526,7 @@ async function handleTelegramWebhook(request, env, ctx) {
               // 錯誤已由 runMonitor 內 Telegram 通知；webhook 仍回 200
             }),
           );
-          ctx.waitUntil(invalidateStatusHtmlCache());
+          ctx.waitUntil(invalidatePublicResponseCache(ctx));
         }
         await sendTelegramToChat(
           env,
@@ -540,7 +542,7 @@ async function handleTelegramWebhook(request, env, ctx) {
           replyOpts,
         );
         if (ctx) {
-          ctx.waitUntil(invalidateStatusHtmlCache());
+          ctx.waitUntil(invalidatePublicResponseCache(ctx));
         }
       }
       return json({ ok: true });
@@ -578,14 +580,6 @@ export default {
       const accept = request.headers.get("Accept") || "";
       const wantsHtml = accept.includes("text/html");
 
-      if (wantsHtml) {
-        const cache = caches.default;
-        const cached = await cache.match(request);
-        if (cached) {
-          return cached;
-        }
-      }
-
       const sensors = await getSensorsDataStrict(env);
       const status = enrichStatusWithDoorState(await readStatus(env), sensors);
 
@@ -595,23 +589,20 @@ export default {
           status: 200,
           headers: { "content-type": "text/html; charset=utf-8" },
         });
-        resp.headers.set("Cache-Control", "public, max-age=900");
-        if (ctx) {
-          ctx.waitUntil(caches.default.put(request, resp.clone()));
-        }
+        resp.headers.set("Cache-Control", "public, max-age=300, s-maxage=300");
+        resp.headers.set("Vary", "Accept");
+        resp.headers.set("Cache-Tag", STATUS_CACHE_TAG);
         return resp;
       }
 
-      return json(status);
+      const resp = json(status);
+      resp.headers.set("Cache-Control", "public, max-age=300, s-maxage=300");
+      resp.headers.set("Vary", "Accept");
+      resp.headers.set("Cache-Tag", STATUS_CACHE_TAG);
+      return resp;
     }
 
     if (url.pathname === "/api" && request.method === "GET") {
-      const cache = caches.default;
-      const cached = await cache.match(request);
-      if (cached) {
-        return cached;
-      }
-
       const status = await readStatus(env);
       const sensorsResult = await getSensorsDataForPublic(env, ctx);
       const sensors = sensorsResult.data;
@@ -692,9 +683,7 @@ export default {
         resp.headers.set("Cache-Control", "no-store");
       } else {
         resp.headers.set("Cache-Control", "public, max-age=300, s-maxage=300");
-        if (ctx) {
-          ctx.waitUntil(cache.put(request, resp.clone()));
-        }
+        resp.headers.set("Cache-Tag", API_CACHE_TAG);
       }
       return resp;
     }
@@ -741,7 +730,7 @@ async function publishEffectiveStatusChange(env, ctx, status) {
     }
   }
   if (ctx) {
-    ctx.waitUntil(invalidateStatusHtmlCache());
+    ctx.waitUntil(invalidatePublicResponseCache(ctx));
   }
 }
 
@@ -779,7 +768,7 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
     await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
     await notifySensorConflict(env, resolution.conflictMessage);
     if (ctx) {
-      ctx.waitUntil(invalidateStatusHtmlCache());
+      ctx.waitUntil(invalidatePublicResponseCache(ctx));
     }
     return { conflict: true, conflictMessage: resolution.conflictMessage };
   }
@@ -816,7 +805,7 @@ async function runMonitor(env, ctx) {
       ]);
       await markRunFinish(env);
       if (ctx) {
-        ctx.waitUntil(invalidateStatusHtmlCache());
+        ctx.waitUntil(invalidatePublicResponseCache(ctx));
       }
       return;
     }
@@ -1345,21 +1334,12 @@ async function refreshSensorsToKV(env, options = {}) {
   }
 }
 
-async function invalidateStatusHtmlCache() {
-  const cache = caches.default;
-  const urls = [
-    "https://door-lock-monitor.irvinfly.workers.dev/status",
-    "https://moztw.space/status",
-    "https://door-lock-monitor.irvinfly.workers.dev/api",
-    "https://moztw.space/api",
-  ];
-  await Promise.all(
-    urls.map((u) =>
-      cache.delete(new Request(u, {
-        method: "GET",
-      })),
-    ),
-  );
+async function invalidatePublicResponseCache(ctx) {
+  try {
+    await ctx.cache.purge({ tags: [STATUS_CACHE_TAG, API_CACHE_TAG] });
+  } catch (error) {
+    console.warn("公開狀態快取清除失敗", error);
+  }
 }
 
 /**
@@ -1474,7 +1454,10 @@ function getBrowserInitMaxRetries(env) {
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
   });
 }
 
