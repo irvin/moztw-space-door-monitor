@@ -140,7 +140,7 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 
 | 鍵 | 說明 |
 |----|------|
-| `session_cookies` / `session_local_storage` | Candy House 登入 session |
+| `session_cookies` / `session_local_storage` | Candy House 登入 session；每次成功讀取狀態後同步更新並續期 |
 | `last_status` | 上次**成功**讀到的 Candy House 狀態（`OPEN` / `CLOSED`） |
 | `last_effective_status` | 上次對外有效的合併開關門狀態 |
 | `last_raw_status` | Candy House Open Sensor `stateInfo` JSON |
@@ -270,7 +270,7 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 |------|------|------|
 | `OPEN_SENSOR_DEVICE_UUID` | `11200423-…` | 工寮 Candy House Open Sensor UUID |
 | `WS_STATUS_TIMEOUT_MS` | `30000` | 等待 WebSocket 裝置列表逾時 |
-| `SESSION_COOKIE_TTL_SEC` | 7 天 | session KV TTL |
+| `SESSION_COOKIE_TTL_SEC` | 7 天 | `session_cookies` 與 `session_local_storage` KV TTL |
 | `BROWSER_INIT_RETRY` | `3` | Browser 啟動重試次數 |
 | `BROWSER_INIT_TIMEOUT_MS` | `30000` | Browser 啟動逾時 |
 | `BROWSER_INIT_RETRY_DELAY_MS` | `5000` | 重試間隔基數 |

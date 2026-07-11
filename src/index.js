@@ -934,8 +934,11 @@ async function fetchLockStatusWithSessionOnly(env) {
             reloginMessage: RELOGIN_REQUIRED_ERROR_MESSAGE,
           },
         );
-        await putIfChanged(env, "last_raw_status", raw);
-        await persistSessionCookies(context, env);
+        await Promise.all([
+          putIfChanged(env, "last_raw_status", raw),
+          persistSessionCookies(context, env),
+          persistSessionLocalStorage(page, env),
+        ]);
         return status;
       } finally {
         wsListener.detach();
@@ -1087,6 +1090,23 @@ async function persistSessionCookies(context, env) {
   const cookies = await context.cookies();
   if (!Array.isArray(cookies) || cookies.length === 0) return;
   await env.LOCK_STATE.put("session_cookies", JSON.stringify(cookies), {
+    expirationTtl: Number(env.SESSION_COOKIE_TTL_SEC || 7 * 24 * 3600),
+  });
+}
+
+async function persistSessionLocalStorage(page, env) {
+  const entries = await page.evaluate(() => {
+    const items = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key != null) {
+        items.push({ key, value: localStorage.getItem(key) });
+      }
+    }
+    return items;
+  });
+  if (!Array.isArray(entries) || entries.length === 0) return;
+  await env.LOCK_STATE.put("session_local_storage", JSON.stringify(entries), {
     expirationTtl: Number(env.SESSION_COOKIE_TTL_SEC || 7 * 24 * 3600),
   });
 }
