@@ -559,22 +559,6 @@ async function handleTelegramWebhook(request, env, ctx) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === "/health") {
-      return json({ ok: true, time: new Date().toISOString() });
-    }
-
-    if (url.pathname === "/" && request.method === "GET") {
-      const status = enrichStatusWithDoorState(
-        await readStatus(env),
-        await getSensorsDataStrict(env),
-      );
-      const html = renderStatusHtml(status);
-      return new Response(html, {
-        status: 200,
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
-    }
-
     if (url.pathname === "/run" && request.method === "POST") {
       try {
         await runMonitor(env, ctx);

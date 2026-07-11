@@ -158,8 +158,6 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/health` | 健康檢查 |
-| GET | `/` | 狀態 HTML |
 | GET | `/status` | JSON 狀態；`Accept: text/html` 時回 HTML（快取 15 分鐘） |
 | GET | `/api` | 對外 Space API（快取 5 分鐘） |
 | POST | `/run` | 手動執行一輪監控 |
