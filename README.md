@@ -132,7 +132,7 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
   - 公告頻道：`#工寮開門 …（by 大門感應器）` 或 `#工寮關門 …`；開門時頻道標題 `Moz://TW（工寮開放中）`，關門 `Moz://TW`
 - **手動 `/manual_open` / `/manual_close`**：公告頻道改為 `（by @username）`；主群組在狀態實際變更時亦會收到開關門訊息
 - **感測器衝突**：主群組；衝突期間只通知一次（不因 CH/SB 開關組合字串不同而重複）；不更新 `last_effective_status`；Cron 不停止
-- **Candy House 讀取失敗**：主群組 `門鎖監控錯誤：…`（依錯誤**類型**去重，同類型故障期間只通知一次）；SwitchBot 仍可參與合併；Cron 不停止
+- **Candy House 讀取失敗**：主群組 `門鎖監控錯誤：…`（整段故障期間只通知一次，恢復成功後才重置）；SwitchBot 仍可參與合併；Cron 不停止
 - **Session 失效**（`/login`）：`門鎖監控需要重新登入，請重新匯入 session`
 - **Candy House 恢復成功**：先發 `門鎖監控已恢復正常`，再依合併狀態處理開關門
 
@@ -145,7 +145,7 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 | `last_effective_status` | 上次對外有效的合併開關門狀態 |
 | `last_raw_status` | Candy House Open Sensor `stateInfo` JSON |
 | `last_run_*` | 最近執行 id、時間、階段、成敗、錯誤 |
-| `last_error_notified_key` | 已通知過的監控錯誤類型（`relogin` / `ws_timeout` / `browser_init` / `other`，去重） |
+| `last_error_notified_key` | 本次故障最先通知的監控錯誤類型（`relogin` / `ws_timeout` / `browser_init` / `other`）；恢復前不再重複通知 |
 | `last_conflict_notified` | 感測器衝突是否已通知（固定值 `sensor_conflict`） |
 | `last_sensor_conflict_active` | 感測器衝突進行中 |
 | `monitoring_mode` | `normal` 或 `manual_open_muted` |

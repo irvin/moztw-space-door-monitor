@@ -202,18 +202,11 @@ export async function waitForOpenSensorWithNavigationRace(
       return captured;
     }
 
-    if (gotoSettled) {
-      if (gotoError) throw gotoError;
-      assertNotOnLogin(page.url());
-      break;
-    }
+    if (gotoSettled && gotoError) throw gotoError;
 
     await new Promise((r) => setTimeout(r, 200));
   }
 
-  const remaining = deadline - Date.now();
-  if (remaining <= 0) {
-    throw new Error(`等待 ${label} 逾時（${timeoutMs}ms）`);
-  }
-  return waitForFirstWsCapture(getCaptured, remaining, label, timeoutMs);
+  assertNotOnLogin(page.url());
+  throw new Error(`等待 ${label} 逾時（${timeoutMs}ms）`);
 }

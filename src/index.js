@@ -1413,8 +1413,7 @@ async function clearMonitorErrorNotification(env) {
 
 async function shouldNotifyError(env, rawMessage) {
   const key = classifyMonitorErrorKey(rawMessage);
-  const prev = await env.LOCK_STATE.get(LAST_ERROR_NOTIFIED_KEY_KV);
-  if (prev === key) return false;
+  if (await hasActiveMonitorErrorNotification(env)) return false;
   await env.LOCK_STATE.put(LAST_ERROR_NOTIFIED_KEY_KV, key);
   return true;
 }
