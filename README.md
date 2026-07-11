@@ -163,7 +163,7 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 | GET | `/status` | JSON 狀態；`Accept: text/html` 時回 HTML（快取 15 分鐘） |
 | GET | `/api` | 對外 Space API（快取 5 分鐘） |
 | POST | `/run` | 手動執行一輪監控 |
-| POST | `/import-session` | 寫入 session（僅本機 `wrangler dev` 測試；`session:update` 改走 wrangler KV） |
+| POST | `/import-session` | 寫入 session（舊本機匯入路徑；`session:update` 改走 wrangler KV） |
 | POST | `/telegram-webhook` | Telegram Webhook（需 `X-Telegram-Bot-Api-Secret-Token`） |
 
 自訂網域（`wrangler.toml`）：`https://moztw.space/status`、`/api`、`/telegram-webhook`。
@@ -222,18 +222,18 @@ npm run session:update            # 登入後直接寫入 LOCK_STATE KV（不經
 
 **Agent 協助更新 session**：背景執行 `npm run session:update`，使用者於瀏覽器完成登入即可；腳本會自動繼續並以 `SESSION_IMPORT_RESULT` 回報結果。
 
-## 本地開發與測試
+## 本地檢查與測試
 
 ```bash
 npm install
 cp .dev.vars.example .dev.vars
 
-npm run dev                    # 本機 Worker（Browser Rendering + 遠端 KV）
 npm run session:update         # 登入並寫入正式 LOCK_STATE KV（wrangler）
 
-curl -X POST http://localhost:8787/run
-curl http://localhost:8787/status
-curl http://localhost:8787/api
+node --check src/index.js
+node --check src/open-sensor-ws.js
+node --check local-test.js
+npx wrangler deploy --dry-run
 ```
 
 ## 部署

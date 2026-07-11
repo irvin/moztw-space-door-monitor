@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "session:update": "node local-test.js"
   },
