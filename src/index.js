@@ -440,17 +440,18 @@ async function handleTelegramWebhook(request, env, ctx) {
       await env.LOCK_STATE.delete(MANUAL_CLOSED_OVERRIDE_KV_KEY);
 
       try {
-        const channel = await getAnnouncementChannelOrNotify();
-        if (channel) {
-          await sendManualDoorAnnouncement(
-            env,
-            "OPEN",
-            new Date(),
-            channel,
-            message.from,
-          );
-          await updateStatusAnnouncementChannelTitle(env, "OPEN", channel);
-        }
+        await sendManualDoorAnnouncement(
+          env,
+          "OPEN",
+          new Date(),
+          TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+          message.from,
+        );
+        await updateStatusAnnouncementChannelTitle(
+          env,
+          "OPEN",
+          TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+        );
       } catch (announcementError) {
         const msg =
           announcementError instanceof Error
@@ -494,17 +495,18 @@ async function handleTelegramWebhook(request, env, ctx) {
       await env.LOCK_STATE.put("last_effective_status", "CLOSED");
 
       try {
-        const channel = await getAnnouncementChannelOrNotify();
-        if (channel) {
-          await sendManualDoorAnnouncement(
-            env,
-            "CLOSED",
-            new Date(),
-            channel,
-            message.from,
-          );
-          await updateStatusAnnouncementChannelTitle(env, "CLOSED", channel);
-        }
+        await sendManualDoorAnnouncement(
+          env,
+          "CLOSED",
+          new Date(),
+          TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+          message.from,
+        );
+        await updateStatusAnnouncementChannelTitle(
+          env,
+          "CLOSED",
+          TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+        );
       } catch (announcementError) {
         const msg =
           announcementError instanceof Error
@@ -714,11 +716,17 @@ async function publishEffectiveStatusChange(env, ctx, status) {
   );
   if (status === "OPEN" || status === "CLOSED") {
     try {
-      const channel = await getAnnouncementChannelOrNotify();
-      if (channel) {
-        await sendStatusAnnouncement(env, status, new Date(), channel);
-        await updateStatusAnnouncementChannelTitle(env, status, channel);
-      }
+      await sendStatusAnnouncement(
+        env,
+        status,
+        new Date(),
+        TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+      );
+      await updateStatusAnnouncementChannelTitle(
+        env,
+        status,
+        TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+      );
     } catch (announcementError) {
       const msg =
         announcementError instanceof Error
@@ -997,10 +1005,6 @@ async function updateStatusAnnouncementChannelTitle(env, status, channel) {
       ? OPEN_ANNOUNCEMENT_CHANNEL_OPEN_TITLE
       : OPEN_ANNOUNCEMENT_CHANNEL_CLOSED_TITLE;
   return setTelegramChatTitle(env, channel, title);
-}
-
-async function getAnnouncementChannelOrNotify() {
-  return TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID;
 }
 
 async function sendTelegramToChat(env, chatId, text, options = {}) {
