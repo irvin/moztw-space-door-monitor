@@ -120,13 +120,13 @@ async function wranglerKvDelete(key) {
  * 寫入 Worker 讀取的 session_cookies；localStorage 空則刪除鍵。
  * @param {unknown[]} cookies
  * @param {{ key: string; value: string | null }[]} localStorageEntries
+ * @param {string} namespaceId
  */
-async function saveSessionToKv(cookies, localStorageEntries) {
+async function saveSessionToKv(cookies, localStorageEntries, namespaceId) {
   if (!Array.isArray(cookies) || cookies.length === 0) {
     throw new Error("cookies 必須是非空陣列");
   }
 
-  const namespaceId = readLockStateKvNamespaceIdFromWranglerToml();
   const expirationTtl = Math.max(
     60,
     Number(SESSION_COOKIE_TTL_SEC || SESSION_COOKIE_TTL_SEC_DEFAULT),
@@ -275,7 +275,11 @@ async function main() {
     });
 
     try {
-      importResult = await saveSessionToKv(cookies, localStorageEntries);
+      importResult = await saveSessionToKv(
+        cookies,
+        localStorageEntries,
+        kvNamespaceId,
+      );
       console.log("KV 寫入完成：", importResult);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
