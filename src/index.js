@@ -566,7 +566,10 @@ export default {
       const wantsHtml = accept.includes("text/html");
 
       const sensors = await getSensorsDataStrict(env);
-      const status = enrichStatusWithDoorState(await readStatus(env), sensors);
+      const status = enrichStatusWithDoorState(
+        await readStatus(env, wantsHtml ? HTML_STATUS_KV_KEYS : STATUS_KV_KEYS),
+        sensors,
+      );
 
       if (wantsHtml) {
         const html = renderStatusHtml(status);
@@ -1126,6 +1129,18 @@ const API_STATUS_KV_KEYS = [
   "manual_closed_override",
   "monitoring_mode",
   "last_sensor_conflict_active",
+];
+
+const HTML_STATUS_KV_KEYS = [
+  "last_run_id",
+  "last_run_started_at",
+  "last_run_finished_at",
+  "last_run_ok",
+  "last_run_error",
+  "last_status",
+  "last_effective_status",
+  "manual_closed_override",
+  "monitoring_mode",
 ];
 
 async function readStatus(env, keys = STATUS_KV_KEYS) {
