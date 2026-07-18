@@ -809,13 +809,11 @@ async function runMonitor(env, ctx) {
     }
 
     let freshCandyStatus = null;
-    let candyFetchFailed = false;
     const sensorsPromise = getSensorsDataStrict(env);
     try {
       freshCandyStatus = await fetchLockStatusWithSessionOnly(env);
       await putIfChanged(env, "last_status", freshCandyStatus);
     } catch (err) {
-      candyFetchFailed = true;
       const sensors = await sensorsPromise;
       const result = await processEffectiveStatusAndNotify(env, ctx, {
         freshCandyStatus: null,
