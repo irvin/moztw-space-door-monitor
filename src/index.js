@@ -756,7 +756,9 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
   }
 
   if (resolution.conflict) {
-    await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
+    if (hadConflictActive !== "1") {
+      await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
+    }
     await notifySensorConflict(env, resolution.conflictMessage);
     if (ctx) {
       ctx.waitUntil(invalidatePublicResponseCache(ctx));
