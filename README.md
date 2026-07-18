@@ -151,7 +151,6 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 | `manual_mode_changed_at` | 最近一次切換監控模式（ISO） |
 | `manual_closed_override` | 手動關門覆寫（`"1"`） |
 | `sensors_cache` | yuaner API 快取（含溫濕度、door_open 等） |
-| `active_run_id` / `active_run_started_at` | 執行中標記（除錯用） |
 
 ## HTTP 端點
 

@@ -794,13 +794,8 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
 }
 
 async function runMonitor(env, ctx) {
-  const now = Date.now();
   const runId = crypto.randomUUID();
   await markRunStart(env, runId);
-  await Promise.all([
-    env.LOCK_STATE.put("active_run_id", runId),
-    env.LOCK_STATE.put("active_run_started_at", String(now)),
-  ]);
 
   try {
     const monitoringMode = await getMonitoringMode(env);
@@ -860,11 +855,7 @@ async function runMonitor(env, ctx) {
     await notifyMonitorErrorIfNeeded(env, msg);
     throw err;
   } finally {
-    await Promise.all([
-      env.LOCK_STATE.put("last_run_finished_at", String(Date.now())),
-      env.LOCK_STATE.delete("active_run_id"),
-      env.LOCK_STATE.delete("active_run_started_at"),
-    ]);
+    await env.LOCK_STATE.put("last_run_finished_at", String(Date.now()));
   }
 }
 
