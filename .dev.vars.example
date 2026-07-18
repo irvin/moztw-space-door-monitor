@@ -1,12 +1,12 @@
 # session KV TTL（秒，選用；預設 7 天，與 Worker SESSION_COOKIE_TTL_SEC 對齊）
 # SESSION_COOKIE_TTL_SEC="604800"
 
-# local-test.js：連續 N 次輪詢皆不在 /login 才視為登入完成（預設 3）
+# update-session.js：連續 N 次輪詢皆不在 /login 才視為登入完成（預設 3）
 # SESSION_LOGIN_STABLE_POLLS="3"
 
 # SESSION_LOGIN_TIMEOUT_MS="600000"
 
-# local-test.js：輪詢是否已離開 /login 的間隔（毫秒，預設 2000）
+# update-session.js：輪詢是否已離開 /login 的間隔（毫秒，預設 2000）
 # SESSION_POLL_INTERVAL_MS="2000"
 
 # 工寮 Open Sensor deviceUUID（選用，預設見 src/open-sensor-ws.js）
@@ -14,6 +14,3 @@
 
 # 等待 WebSocket 第一筆 PubedCompanyDevice 逾時（毫秒，選用）
 # WS_STATUS_TIMEOUT_MS="30000"
-
-# Telegram Webhook（本機測試 webhook 時選用；與 wrangler secret 同名）
-# TELEGRAM_WEBHOOK_SECRET="與 setWebhook secret_token 相同的字串"

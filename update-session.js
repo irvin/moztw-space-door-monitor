@@ -1,6 +1,6 @@
 // 本機用 Playwright 腳本：開登入頁，讓你手動完成登入，
 // 然後透過 Candy House WebSocket（PubedCompanyDevice）讀取工寮 Open Sensor 狀態，
-// 最後以 wrangler 直接寫入 LOCK_STATE KV（不經 HTTP，避開 workers.dev Access）。
+// 最後以 wrangler 直接寫入 LOCK_STATE KV，不經 HTTP 匯入端點。
 //
 // 登入完成後會自動偵測（離開 /login）。
 

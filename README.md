@@ -212,7 +212,7 @@ npm run session:update            # 登入後直接寫入 LOCK_STATE KV（不經
 3. 以 `wrangler kv key put` 寫入 Worker 讀取的 `session_cookies` / `session_local_storage` 鍵，並設定 TTL。
 4. 終端機輸出 `SESSION_IMPORT_RESULT:` JSON；`ok: true` 表示 KV 寫入成功。
 
-> `workers.dev` 可維持 Cloudflare Access restrict；`session:update` 不會 POST 到公開 URL。
+> `session:update` 透過 Wrangler 直接寫入遠端 KV，不依賴 workers.dev 或任何 HTTP 匯入端點。
 
 **Agent 協助更新 session**：背景執行 `npm run session:update`，使用者於瀏覽器完成登入即可；腳本會自動繼續並以 `SESSION_IMPORT_RESULT` 回報結果。
 
