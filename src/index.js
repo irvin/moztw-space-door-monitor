@@ -744,9 +744,9 @@ async function publishEffectiveStatusChange(env, ctx, status) {
  * @returns {Promise<{ conflict: boolean; conflictMessage?: string }>}
  */
 async function processEffectiveStatusAndNotify(env, ctx, input) {
-  const sensors = input.sensors ?? (await getSensorsDataStrict(env));
-  const lastStatus = await env.LOCK_STATE.get("last_status");
-  const candyForCombine = input.freshCandyStatus ?? lastStatus;
+  const sensors = input.sensors;
+  const candyForCombine =
+    input.freshCandyStatus ?? (await env.LOCK_STATE.get("last_status"));
   const overrideActive =
     (await env.LOCK_STATE.get(MANUAL_CLOSED_OVERRIDE_KV_KEY)) === "1";
   let resolution = resolveEffectiveDoorState(candyForCombine, sensors);
