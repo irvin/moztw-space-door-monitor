@@ -143,7 +143,6 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 | `session_cookies` / `session_local_storage` | Candy House 登入 session；每次成功讀取狀態後同步更新並續期 |
 | `last_status` | 上次**成功**讀到的 Candy House 狀態（`OPEN` / `CLOSED`） |
 | `last_effective_status` | 上次對外有效的合併開關門狀態 |
-| `last_raw_status` | Candy House Open Sensor `stateInfo` JSON |
 | `last_run_*` | 最近執行 id、時間、階段、成敗、錯誤 |
 | `last_error_notified_key` | 本次故障最先通知的監控錯誤類型（`relogin` / `ws_timeout` / `browser_init` / `other`）；恢復前不再重複通知 |
 | `last_conflict_notified` | 感測器衝突是否已通知（固定值 `sensor_conflict`） |

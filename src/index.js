@@ -922,7 +922,7 @@ async function fetchLockStatusWithSessionOnly(env) {
       }
 
       try {
-        const { status, raw } = await waitForOpenSensorWithNavigationRace(
+        const { status } = await waitForOpenSensorWithNavigationRace(
           page,
           wsListener.getCaptured,
           wsTimeoutMs,
@@ -933,7 +933,6 @@ async function fetchLockStatusWithSessionOnly(env) {
           },
         );
         await Promise.all([
-          putIfChanged(env, "last_raw_status", raw),
           persistSessionCookies(context, env),
           persistSessionLocalStorage(page, env),
         ]);
@@ -1191,7 +1190,6 @@ async function readStatus(env) {
     "last_status",
     "last_effective_status",
     "manual_closed_override",
-    "last_raw_status",
     "monitoring_mode",
     "manual_mode_changed_at",
     "last_sensor_conflict_active",
