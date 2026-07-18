@@ -257,7 +257,7 @@ function renderStatusHtml(status) {
     <h1>Door Lock Monitor</h1>
     ${
       status.monitoring_mode === MONITORING_MODE_MANUAL_OPEN_MUTED
-        ? `<div class="banner">感測隔離中（手動開門）：Cron 與 /run 不會讀取網頁感測，請以 Telegram /manual_close 恢復。</div>`
+        ? `<div class="banner">感測隔離中（手動開門）：自動監控不會讀取網頁感測，請以 Telegram /manual_close 恢復。</div>`
         : ""
     }
     ${
@@ -561,21 +561,6 @@ async function handleTelegramWebhook(request, env, ctx) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === "/run" && request.method === "POST") {
-      try {
-        await runMonitor(env, ctx);
-        const [stage, ok, err] = await Promise.all([
-          env.LOCK_STATE.get("last_run_stage"),
-          env.LOCK_STATE.get("last_run_ok"),
-          env.LOCK_STATE.get("last_run_error"),
-        ]);
-        return json({ ok: true, stage, run_ok: ok, error: err || "" });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return json({ ok: false, error: message }, 500);
-      }
-    }
-
     if (url.pathname === "/status" && request.method === "GET") {
       const accept = request.headers.get("Accept") || "";
       const wantsHtml = accept.includes("text/html");

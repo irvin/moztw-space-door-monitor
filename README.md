@@ -7,7 +7,7 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 ## 架構概覽
 
 ```
-┌─────────────────┐     Cron / POST /run      ┌──────────────────────┐
+┌─────────────────┐          Cron             ┌──────────────────────┐
 │  Candy House    │ ◄── Browser Rendering ──│                      │
 │  (WebSocket)    │                         │  Cloudflare Worker   │
 └─────────────────┘                         │  (src/index.js)      │
@@ -158,7 +158,6 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 |------|------|------|
 | GET | `/status` | JSON 或（`Accept: text/html` 時）HTML 狀態，Workers Cache 5 分鐘（`Vary: Accept`） |
 | GET | `/api` | 對外 Space API（Workers Cache 5 分鐘；感測資料 stale 時不快取） |
-| POST | `/run` | 手動執行一輪監控 |
 | POST | `/telegram-webhook` | Telegram Webhook（需 `X-Telegram-Bot-Api-Secret-Token`） |
 
 自訂網域（`wrangler.toml`）：`https://moztw.space/status`、`/api`、`/telegram-webhook`。
