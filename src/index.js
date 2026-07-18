@@ -1106,25 +1106,6 @@ async function persistSessionLocalStorage(page, env) {
   });
 }
 
-async function waitForAnySelector(page, selectors, fieldName, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const selector of selectors) {
-      const loc = await findActionableLocator(page, selector);
-      if (loc) return loc;
-    }
-    await sleep(500);
-  }
-  throw new Error(`等待 ${fieldName} 超時，嘗試過: ${selectors.join(" | ")}`);
-}
-
-async function ensureNotOnLoginPage(page) {
-  const currentUrl = page.url();
-  if (isBizLoginPath(currentUrl)) {
-    throw new Error(RELOGIN_REQUIRED_ERROR_MESSAGE);
-  }
-}
-
 function isReloginRequiredError(message) {
   return String(message || "").includes(RELOGIN_REQUIRED_ERROR_MESSAGE);
 }
@@ -1139,42 +1120,6 @@ function isBizLoginPath(currentUrl) {
   } catch {
     return false;
   }
-}
-
-async function findActionableLocator(page, selector) {
-  const loc = page.locator(selector).first();
-  const count = await loc.count();
-  if (count === 0) return null;
-  const visible = await safeVisible(loc);
-  if (!visible) return null;
-  const enabled = await safeEnabled(loc);
-  if (!enabled) return null;
-  return loc;
-}
-
-async function safeVisible(locator) {
-  try {
-    return await locator.isVisible();
-  } catch {
-    return false;
-  }
-}
-
-async function safeEnabled(locator) {
-  try {
-    return !(await locator.isDisabled());
-  } catch {
-    return false;
-  }
-}
-
-function buildCandidates(primary, fallbacks) {
-  const list = [];
-  if (primary && primary.trim()) list.push(primary.trim());
-  for (const item of fallbacks) {
-    if (!list.includes(item)) list.push(item);
-  }
-  return list;
 }
 
 async function readStatus(env) {
