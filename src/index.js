@@ -1317,16 +1317,11 @@ function buildMonitorErrorTelegramText(rawMessage) {
 }
 
 async function hasActiveMonitorErrorNotification(env) {
-  const key = await env.LOCK_STATE.get(LAST_ERROR_NOTIFIED_KEY_KV);
-  if (key) return true;
-  return Boolean(await env.LOCK_STATE.get("last_error_notified"));
+  return Boolean(await env.LOCK_STATE.get(LAST_ERROR_NOTIFIED_KEY_KV));
 }
 
 async function clearMonitorErrorNotification(env) {
-  await Promise.all([
-    env.LOCK_STATE.delete(LAST_ERROR_NOTIFIED_KEY_KV),
-    env.LOCK_STATE.delete("last_error_notified"),
-  ]);
+  await env.LOCK_STATE.delete(LAST_ERROR_NOTIFIED_KEY_KV);
 }
 
 async function shouldNotifyError(env, rawMessage) {
