@@ -256,12 +256,11 @@ async function main() {
     console.log("重新載入狀態頁並等待 WebSocket 裝置列表...");
     await page.goto(STATUS_URL_DEFAULT, { waitUntil: "domcontentloaded" });
 
-    const { status, raw } = await waitForFirstWsCapture(
+    const { status } = await waitForFirstWsCapture(
       wsListener.getCaptured,
       wsTimeoutMs,
       "WebSocket PubedCompanyDevice（工寮 Open Sensor）",
     );
-    console.log("stateInfo：", raw);
     console.log("正規化後狀態：", status);
 
     const cookies = await page.context().cookies();
