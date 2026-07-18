@@ -297,8 +297,6 @@ function renderStatusHtml(status) {
       <br/>
       Candy House: <code>${status.last_status || "-"}</code>
       · door_open: <code>${status.door_open === true ? "true（開）" : status.door_open === false ? "false（關）" : "-"}</code>
-      <br/>
-      原始狀態文字: <code>${(status.last_raw_status || "").slice(0, 120) || "-"}</code>
     </div>
   </div>
   <script>
