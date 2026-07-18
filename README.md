@@ -7,7 +7,7 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 ## 架構概覽
 
 ```
-┌─────────────────┐     Cron / POST /run      ┌──────────────────────┐
+┌─────────────────┐          Cron             ┌──────────────────────┐
 │  Candy House    │ ◄── Browser Rendering ──│                      │
 │  (WebSocket)    │                         │  Cloudflare Worker   │
 └─────────────────┘                         │  (src/index.js)      │
@@ -143,7 +143,6 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 | `session_cookies` / `session_local_storage` | Candy House 登入 session；每次成功讀取狀態後同步更新並續期 |
 | `last_status` | 上次**成功**讀到的 Candy House 狀態（`OPEN` / `CLOSED`） |
 | `last_effective_status` | 上次對外有效的合併開關門狀態 |
-| `last_raw_status` | Candy House Open Sensor `stateInfo` JSON |
 | `last_run_*` | 最近執行 id、時間、階段、成敗、錯誤 |
 | `last_error_notified_key` | 本次故障最先通知的監控錯誤類型（`relogin` / `ws_timeout` / `browser_init` / `other`）；恢復前不再重複通知 |
 | `last_conflict_notified` | 感測器衝突是否已通知（固定值 `sensor_conflict`） |
@@ -152,7 +151,6 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 | `manual_mode_changed_at` | 最近一次切換監控模式（ISO） |
 | `manual_closed_override` | 手動關門覆寫（`"1"`） |
 | `sensors_cache` | yuaner API 快取（含溫濕度、door_open 等） |
-| `active_run_id` / `active_run_started_at` | 執行中標記（除錯用） |
 
 ## HTTP 端點
 
@@ -160,7 +158,6 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 |------|------|------|
 | GET | `/status` | JSON 或（`Accept: text/html` 時）HTML 狀態，Workers Cache 5 分鐘（`Vary: Accept`） |
 | GET | `/api` | 對外 Space API（Workers Cache 5 分鐘；感測資料 stale 時不快取） |
-| POST | `/run` | 手動執行一輪監控 |
 | POST | `/telegram-webhook` | Telegram Webhook（需 `X-Telegram-Bot-Api-Secret-Token`） |
 
 自訂網域（`wrangler.toml`）：`https://moztw.space/status`、`/api`、`/telegram-webhook`。
@@ -215,7 +212,7 @@ npm run session:update            # 登入後直接寫入 LOCK_STATE KV（不經
 3. 以 `wrangler kv key put` 寫入 Worker 讀取的 `session_cookies` / `session_local_storage` 鍵，並設定 TTL。
 4. 終端機輸出 `SESSION_IMPORT_RESULT:` JSON；`ok: true` 表示 KV 寫入成功。
 
-> `workers.dev` 可維持 Cloudflare Access restrict；`session:update` 不會 POST 到公開 URL。
+> `session:update` 透過 Wrangler 直接寫入遠端 KV，不依賴 workers.dev 或任何 HTTP 匯入端點。
 
 **Agent 協助更新 session**：背景執行 `npm run session:update`，使用者於瀏覽器完成登入即可；腳本會自動繼續並以 `SESSION_IMPORT_RESULT` 回報結果。
 

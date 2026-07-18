@@ -257,7 +257,7 @@ function renderStatusHtml(status) {
     <h1>Door Lock Monitor</h1>
     ${
       status.monitoring_mode === MONITORING_MODE_MANUAL_OPEN_MUTED
-        ? `<div class="banner">感測隔離中（手動開門）：Cron 與 /run 不會讀取網頁感測，請以 Telegram /manual_close 恢復。</div>`
+        ? `<div class="banner">感測隔離中（手動開門）：自動監控不會讀取網頁感測，請以 Telegram /manual_close 恢復。</div>`
         : ""
     }
     ${
@@ -440,17 +440,18 @@ async function handleTelegramWebhook(request, env, ctx) {
       await env.LOCK_STATE.delete(MANUAL_CLOSED_OVERRIDE_KV_KEY);
 
       try {
-        const channel = await getAnnouncementChannelOrNotify();
-        if (channel) {
-          await sendManualDoorAnnouncement(
-            env,
-            "OPEN",
-            new Date(),
-            channel,
-            message.from,
-          );
-          await updateStatusAnnouncementChannelTitle(env, "OPEN", channel);
-        }
+        await sendManualDoorAnnouncement(
+          env,
+          "OPEN",
+          new Date(),
+          TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+          message.from,
+        );
+        await updateStatusAnnouncementChannelTitle(
+          env,
+          "OPEN",
+          TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+        );
       } catch (announcementError) {
         const msg =
           announcementError instanceof Error
@@ -494,17 +495,18 @@ async function handleTelegramWebhook(request, env, ctx) {
       await env.LOCK_STATE.put("last_effective_status", "CLOSED");
 
       try {
-        const channel = await getAnnouncementChannelOrNotify();
-        if (channel) {
-          await sendManualDoorAnnouncement(
-            env,
-            "CLOSED",
-            new Date(),
-            channel,
-            message.from,
-          );
-          await updateStatusAnnouncementChannelTitle(env, "CLOSED", channel);
-        }
+        await sendManualDoorAnnouncement(
+          env,
+          "CLOSED",
+          new Date(),
+          TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+          message.from,
+        );
+        await updateStatusAnnouncementChannelTitle(
+          env,
+          "CLOSED",
+          TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+        );
       } catch (announcementError) {
         const msg =
           announcementError instanceof Error
@@ -559,27 +561,15 @@ async function handleTelegramWebhook(request, env, ctx) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === "/run" && request.method === "POST") {
-      try {
-        await runMonitor(env, ctx);
-        const [stage, ok, err] = await Promise.all([
-          env.LOCK_STATE.get("last_run_stage"),
-          env.LOCK_STATE.get("last_run_ok"),
-          env.LOCK_STATE.get("last_run_error"),
-        ]);
-        return json({ ok: true, stage, run_ok: ok, error: err || "" });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return json({ ok: false, error: message }, 500);
-      }
-    }
-
     if (url.pathname === "/status" && request.method === "GET") {
       const accept = request.headers.get("Accept") || "";
       const wantsHtml = accept.includes("text/html");
 
       const sensors = await getSensorsDataStrict(env);
-      const status = enrichStatusWithDoorState(await readStatus(env), sensors);
+      const status = enrichStatusWithDoorState(
+        await readStatus(env, wantsHtml ? HTML_STATUS_KV_KEYS : STATUS_KV_KEYS),
+        sensors,
+      );
 
       if (wantsHtml) {
         const html = renderStatusHtml(status);
@@ -601,7 +591,7 @@ export default {
     }
 
     if (url.pathname === "/api" && request.method === "GET") {
-      const status = await readStatus(env);
+      const status = await readStatus(env, API_STATUS_KV_KEYS);
       const sensorsResult = await getSensorsDataForPublic(env, ctx);
       const sensors = sensorsResult.data;
       const overrideActive = status.manual_closed_override === "1";
@@ -714,11 +704,17 @@ async function publishEffectiveStatusChange(env, ctx, status) {
   );
   if (status === "OPEN" || status === "CLOSED") {
     try {
-      const channel = await getAnnouncementChannelOrNotify();
-      if (channel) {
-        await sendStatusAnnouncement(env, status, new Date(), channel);
-        await updateStatusAnnouncementChannelTitle(env, status, channel);
-      }
+      await sendStatusAnnouncement(
+        env,
+        status,
+        new Date(),
+        TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+      );
+      await updateStatusAnnouncementChannelTitle(
+        env,
+        status,
+        TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID,
+      );
     } catch (announcementError) {
       const msg =
         announcementError instanceof Error
@@ -736,9 +732,9 @@ async function publishEffectiveStatusChange(env, ctx, status) {
  * @returns {Promise<{ conflict: boolean; conflictMessage?: string }>}
  */
 async function processEffectiveStatusAndNotify(env, ctx, input) {
-  const sensors = input.sensors ?? (await getSensorsDataStrict(env));
-  const lastStatus = await env.LOCK_STATE.get("last_status");
-  const candyForCombine = input.freshCandyStatus ?? lastStatus;
+  const sensors = input.sensors;
+  const candyForCombine =
+    input.freshCandyStatus ?? (await env.LOCK_STATE.get("last_status"));
   const overrideActive =
     (await env.LOCK_STATE.get(MANUAL_CLOSED_OVERRIDE_KV_KEY)) === "1";
   let resolution = resolveEffectiveDoorState(candyForCombine, sensors);
@@ -763,7 +759,9 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
   }
 
   if (resolution.conflict) {
-    await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
+    if (hadConflictActive !== "1") {
+      await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
+    }
     await notifySensorConflict(env, resolution.conflictMessage);
     if (ctx) {
       ctx.waitUntil(invalidatePublicResponseCache(ctx));
@@ -786,13 +784,8 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
 }
 
 async function runMonitor(env, ctx) {
-  const now = Date.now();
   const runId = crypto.randomUUID();
   await markRunStart(env, runId);
-  await Promise.all([
-    env.LOCK_STATE.put("active_run_id", runId),
-    env.LOCK_STATE.put("active_run_started_at", String(now)),
-  ]);
 
   try {
     const monitoringMode = await getMonitoringMode(env);
@@ -809,13 +802,11 @@ async function runMonitor(env, ctx) {
     }
 
     let freshCandyStatus = null;
-    let candyFetchFailed = false;
     const sensorsPromise = getSensorsDataStrict(env);
     try {
       freshCandyStatus = await fetchLockStatusWithSessionOnly(env);
       await putIfChanged(env, "last_status", freshCandyStatus);
     } catch (err) {
-      candyFetchFailed = true;
       const sensors = await sensorsPromise;
       const result = await processEffectiveStatusAndNotify(env, ctx, {
         freshCandyStatus: null,
@@ -854,11 +845,7 @@ async function runMonitor(env, ctx) {
     await notifyMonitorErrorIfNeeded(env, msg);
     throw err;
   } finally {
-    await Promise.all([
-      env.LOCK_STATE.put("last_run_finished_at", String(Date.now())),
-      env.LOCK_STATE.delete("active_run_id"),
-      env.LOCK_STATE.delete("active_run_started_at"),
-    ]);
+    await env.LOCK_STATE.put("last_run_finished_at", String(Date.now()));
   }
 }
 
@@ -922,7 +909,7 @@ async function fetchLockStatusWithSessionOnly(env) {
       }
 
       try {
-        const { status, raw } = await waitForOpenSensorWithNavigationRace(
+        const { status } = await waitForOpenSensorWithNavigationRace(
           page,
           wsListener.getCaptured,
           wsTimeoutMs,
@@ -933,7 +920,6 @@ async function fetchLockStatusWithSessionOnly(env) {
           },
         );
         await Promise.all([
-          putIfChanged(env, "last_raw_status", raw),
           persistSessionCookies(context, env),
           persistSessionLocalStorage(page, env),
         ]);
@@ -1000,10 +986,6 @@ async function updateStatusAnnouncementChannelTitle(env, status, channel) {
       ? OPEN_ANNOUNCEMENT_CHANNEL_OPEN_TITLE
       : OPEN_ANNOUNCEMENT_CHANNEL_CLOSED_TITLE;
   return setTelegramChatTitle(env, channel, title);
-}
-
-async function getAnnouncementChannelOrNotify() {
-  return TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID;
 }
 
 async function sendTelegramToChat(env, chatId, text, options = {}) {
@@ -1109,25 +1091,6 @@ async function persistSessionLocalStorage(page, env) {
   });
 }
 
-async function waitForAnySelector(page, selectors, fieldName, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const selector of selectors) {
-      const loc = await findActionableLocator(page, selector);
-      if (loc) return loc;
-    }
-    await sleep(500);
-  }
-  throw new Error(`等待 ${fieldName} 超時，嘗試過: ${selectors.join(" | ")}`);
-}
-
-async function ensureNotOnLoginPage(page) {
-  const currentUrl = page.url();
-  if (isBizLoginPath(currentUrl)) {
-    throw new Error(RELOGIN_REQUIRED_ERROR_MESSAGE);
-  }
-}
-
 function isReloginRequiredError(message) {
   return String(message || "").includes(RELOGIN_REQUIRED_ERROR_MESSAGE);
 }
@@ -1144,58 +1107,43 @@ function isBizLoginPath(currentUrl) {
   }
 }
 
-async function findActionableLocator(page, selector) {
-  const loc = page.locator(selector).first();
-  const count = await loc.count();
-  if (count === 0) return null;
-  const visible = await safeVisible(loc);
-  if (!visible) return null;
-  const enabled = await safeEnabled(loc);
-  if (!enabled) return null;
-  return loc;
-}
+const STATUS_KV_KEYS = [
+  "last_run_id",
+  "last_run_started_at",
+  "last_run_finished_at",
+  "last_run_stage",
+  "last_run_ok",
+  "last_run_error",
+  "last_status",
+  "last_effective_status",
+  "manual_closed_override",
+  "monitoring_mode",
+  "manual_mode_changed_at",
+  "last_sensor_conflict_active",
+];
 
-async function safeVisible(locator) {
-  try {
-    return await locator.isVisible();
-  } catch {
-    return false;
-  }
-}
+const API_STATUS_KV_KEYS = [
+  "last_run_finished_at",
+  "last_status",
+  "last_effective_status",
+  "manual_closed_override",
+  "monitoring_mode",
+  "last_sensor_conflict_active",
+];
 
-async function safeEnabled(locator) {
-  try {
-    return !(await locator.isDisabled());
-  } catch {
-    return false;
-  }
-}
+const HTML_STATUS_KV_KEYS = [
+  "last_run_id",
+  "last_run_started_at",
+  "last_run_finished_at",
+  "last_run_ok",
+  "last_run_error",
+  "last_status",
+  "last_effective_status",
+  "manual_closed_override",
+  "monitoring_mode",
+];
 
-function buildCandidates(primary, fallbacks) {
-  const list = [];
-  if (primary && primary.trim()) list.push(primary.trim());
-  for (const item of fallbacks) {
-    if (!list.includes(item)) list.push(item);
-  }
-  return list;
-}
-
-async function readStatus(env) {
-  const keys = [
-    "last_run_id",
-    "last_run_started_at",
-    "last_run_finished_at",
-    "last_run_stage",
-    "last_run_ok",
-    "last_run_error",
-    "last_status",
-    "last_effective_status",
-    "manual_closed_override",
-    "last_raw_status",
-    "monitoring_mode",
-    "manual_mode_changed_at",
-    "last_sensor_conflict_active",
-  ];
+async function readStatus(env, keys = STATUS_KV_KEYS) {
   const entries = await Promise.all(
     keys.map(async (k) => [k, await env.LOCK_STATE.get(k)])
   );
@@ -1269,8 +1217,7 @@ function resolveApiOpenState(status, sensors, overrideActive, sensorsStale) {
 async function getSensorsDataStrict(env) {
   let cached = await readSensorsFromKV(env);
   if (isSensorsCacheStale(cached)) {
-    await refreshSensorsToKV(env, { force: true });
-    cached = await readSensorsFromKV(env);
+    cached = (await refreshSensorsToKV(env, { force: true })) ?? cached;
   }
   return normalizeSensorsPayload(cached?.data ?? null);
 }
@@ -1283,8 +1230,7 @@ async function getSensorsDataStrict(env) {
 async function getSensorsDataForPublic(env, ctx) {
   let cached = await readSensorsFromKV(env);
   if (!cached) {
-    await refreshSensorsToKV(env, { force: true });
-    cached = await readSensorsFromKV(env);
+    cached = await refreshSensorsToKV(env, { force: true });
     const fetchedAt = cached?.fetched_at ?? Date.now();
     return {
       data: normalizeSensorsPayload(cached?.data ?? null),
@@ -1322,7 +1268,7 @@ async function refreshSensorsToKV(env, options = {}) {
   const force = options.force === true;
   if (!force) {
     const inflight = await env.LOCK_STATE.get(SENSORS_REFRESH_INFLIGHT_KEY);
-    if (inflight) return;
+    if (inflight) return null;
     await env.LOCK_STATE.put(SENSORS_REFRESH_INFLIGHT_KEY, "1", {
       expirationTtl: SENSORS_REFRESH_INFLIGHT_TTL_SEC,
     });
@@ -1334,17 +1280,20 @@ async function refreshSensorsToKV(env, options = {}) {
       SENSORS_FETCH_TIMEOUT_MS,
       "sensors fetch timeout",
     );
-    if (!resp.ok) return;
+    if (!resp.ok) return null;
     const text = await resp.text();
     const parsed = JSON.parse(text);
     const data = normalizeSensorsPayload(parsed);
-    if (!data) return;
+    if (!data) return null;
+    const cached = { fetched_at: Date.now(), data };
     await env.LOCK_STATE.put(
       SENSORS_KV_KEY,
-      JSON.stringify({ fetched_at: Date.now(), data }),
+      JSON.stringify(cached),
     );
+    return cached;
   } catch {
     // 上游壞掉就不寫 KV，舊值保留；下次 request 仍會嘗試補
+    return null;
   } finally {
     if (!force) {
       await env.LOCK_STATE.delete(SENSORS_REFRESH_INFLIGHT_KEY).catch(() => {});
@@ -1381,16 +1330,11 @@ function buildMonitorErrorTelegramText(rawMessage) {
 }
 
 async function hasActiveMonitorErrorNotification(env) {
-  const key = await env.LOCK_STATE.get(LAST_ERROR_NOTIFIED_KEY_KV);
-  if (key) return true;
-  return Boolean(await env.LOCK_STATE.get("last_error_notified"));
+  return Boolean(await env.LOCK_STATE.get(LAST_ERROR_NOTIFIED_KEY_KV));
 }
 
 async function clearMonitorErrorNotification(env) {
-  await Promise.all([
-    env.LOCK_STATE.delete(LAST_ERROR_NOTIFIED_KEY_KV),
-    env.LOCK_STATE.delete("last_error_notified"),
-  ]);
+  await env.LOCK_STATE.delete(LAST_ERROR_NOTIFIED_KEY_KV);
 }
 
 async function shouldNotifyError(env, rawMessage) {

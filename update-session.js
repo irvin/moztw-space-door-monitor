@@ -1,6 +1,6 @@
 // 本機用 Playwright 腳本：開登入頁，讓你手動完成登入，
 // 然後透過 Candy House WebSocket（PubedCompanyDevice）讀取工寮 Open Sensor 狀態，
-// 最後以 wrangler 直接寫入 LOCK_STATE KV（不經 HTTP，避開 workers.dev Access）。
+// 最後以 wrangler 直接寫入 LOCK_STATE KV，不經 HTTP 匯入端點。
 //
 // 登入完成後會自動偵測（離開 /login）。
 
@@ -120,13 +120,13 @@ async function wranglerKvDelete(key) {
  * 寫入 Worker 讀取的 session_cookies；localStorage 空則刪除鍵。
  * @param {unknown[]} cookies
  * @param {{ key: string; value: string | null }[]} localStorageEntries
+ * @param {string} namespaceId
  */
-async function saveSessionToKv(cookies, localStorageEntries) {
+async function saveSessionToKv(cookies, localStorageEntries, namespaceId) {
   if (!Array.isArray(cookies) || cookies.length === 0) {
     throw new Error("cookies 必須是非空陣列");
   }
 
-  const namespaceId = readLockStateKvNamespaceIdFromWranglerToml();
   const expirationTtl = Math.max(
     60,
     Number(SESSION_COOKIE_TTL_SEC || SESSION_COOKIE_TTL_SEC_DEFAULT),
@@ -256,12 +256,11 @@ async function main() {
     console.log("重新載入狀態頁並等待 WebSocket 裝置列表...");
     await page.goto(STATUS_URL_DEFAULT, { waitUntil: "domcontentloaded" });
 
-    const { status, raw } = await waitForFirstWsCapture(
+    const { status } = await waitForFirstWsCapture(
       wsListener.getCaptured,
       wsTimeoutMs,
       "WebSocket PubedCompanyDevice（工寮 Open Sensor）",
     );
-    console.log("stateInfo：", raw);
     console.log("正規化後狀態：", status);
 
     const cookies = await page.context().cookies();
@@ -276,7 +275,11 @@ async function main() {
     });
 
     try {
-      importResult = await saveSessionToKv(cookies, localStorageEntries);
+      importResult = await saveSessionToKv(
+        cookies,
+        localStorageEntries,
+        kvNamespaceId,
+      );
       console.log("KV 寫入完成：", importResult);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -42,7 +42,7 @@ export function framePayloadToText(frame) {
 /**
  * @param {string} text
  * @param {string} deviceUuid
- * @returns {{ status: string; raw: string }|null}
+ * @returns {{ status: string }|null}
  */
 export function parseOpenSensorFromWsPayload(text, deviceUuid) {
   let msg;
@@ -67,10 +67,7 @@ export function parseOpenSensorFromWsPayload(text, deviceUuid) {
   const mapped = mapCHSesame2Status(device.stateInfo.CHSesame2Status);
   if (!mapped) return null;
 
-  return {
-    status: mapped,
-    raw: JSON.stringify(device.stateInfo),
-  };
+  return { status: mapped };
 }
 
 /**
@@ -107,7 +104,7 @@ export function mapCHSesame2Status(chStatus) {
  */
 export function attachOpenSensorWebSocketListener(page, deviceUuid) {
   const uuid = deviceUuid || OPEN_SENSOR_DEVICE_UUID_DEFAULT;
-  /** @type {{ status: string; raw: string }|null} */
+  /** @type {{ status: string }|null} */
   let captured = null;
   /** @type {Array<{ ws: import("@cloudflare/playwright").WebSocket; onFrame: (frame: import("@cloudflare/playwright").WebSocketFrame) => void }>} */
   const bindings = [];
@@ -139,7 +136,7 @@ export function attachOpenSensorWebSocketListener(page, deviceUuid) {
 }
 
 /**
- * @param {() => { status: string; raw: string }|null} getCaptured
+ * @param {() => { status: string }|null} getCaptured
  * @param {number} waitMs 實際等待時間（毫秒）
  * @param {string} [label]
  * @param {number} [errorReportMs] 逾時錯誤訊息中顯示的設定 timeout（預設同 waitMs）
@@ -160,7 +157,7 @@ export async function waitForFirstWsCapture(getCaptured, waitMs, label, errorRep
 /**
  * 與 page.goto 並行等待 WebSocket；收到目標 frame 後儘早返回。
  * @param {import("@cloudflare/playwright").Page} page
- * @param {() => { status: string; raw: string }|null} getCaptured
+ * @param {() => { status: string }|null} getCaptured
  * @param {number} timeoutMs
  * @param {{ gotoUrl: string; isLoginPath: (url: string) => boolean; reloginMessage?: string }} options
  */
