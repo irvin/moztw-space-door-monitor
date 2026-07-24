@@ -1,5 +1,13 @@
 import { launch } from "@cloudflare/playwright";
 import {
+  applyManualClosedOverride,
+  formatDoorStatusZh,
+  isLongTermMismatch,
+  normalizeSensorsPayload,
+  readDoorOpenFromSensors,
+  resolveEffectiveDoorState,
+} from "./door-state.js";
+import {
   OPEN_SENSOR_DEVICE_UUID_DEFAULT,
   WS_STATUS_TIMEOUT_MS_DEFAULT,
   attachOpenSensorWebSocketListener,
@@ -23,8 +31,6 @@ const SENSOR_CONFLICT_NOTIFY_KEY = "sensor_conflict";
 const LAST_CH_SENSOR_STATUS_KV_KEY = "last_ch_sensor_status";
 const LAST_SB_SENSOR_STATUS_KV_KEY = "last_sb_sensor_status";
 const SENSOR_MISMATCH_STREAK_KV_KEY = "sensor_mismatch_streak";
-/** 連續多少次 Cron mismatch 才視為長期不一致並通知 */
-const SENSOR_MISMATCH_STREAK_NOTIFY_THRESHOLD = 3;
 const STATUS_CACHE_TAG = "door-monitor-status";
 const API_CACHE_TAG = "door-monitor-api";
 
@@ -34,163 +40,6 @@ const SENSORS_REFRESH_INFLIGHT_TTL_SEC = 30;
 const SENSORS_REFRESH_THRESHOLD_MS = 10 * 60 * 1000;
 const SENSORS_FETCH_TIMEOUT_MS = 3000;
 const SENSORS_API_URL = "https://moztw-co2.yuaner.tw/sensors";
-
-/** yuaner API 可能為扁平物件，或包在 `{ sensors: { ... } }`（含舊 KV 雙層）。 */
-function normalizeSensorsPayload(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  let payload = /** @type {Record<string, unknown>} */ (raw);
-  for (let depth = 0; depth < 3; depth++) {
-    if (
-      "temperature" in payload ||
-      "door_open" in payload ||
-      "humidity" in payload ||
-      "carbondioxide" in payload
-    ) {
-      return payload;
-    }
-    const wrapped = payload.sensors;
-    if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) {
-      return payload;
-    }
-    payload = /** @type {Record<string, unknown>} */ (wrapped);
-  }
-  return payload;
-}
-
-/**
- * @param {unknown} sensors
- * @returns {boolean|null} true=開門、false=關門、null=無資料
- */
-function readDoorOpenFromSensors(sensors) {
-  const normalized = normalizeSensorsPayload(sensors);
-  const value = normalized?.door_open?.[0]?.value;
-  if (typeof value !== "boolean") return null;
-  return value;
-}
-
-/**
- * @param {boolean|null} sb
- * @returns {"OPEN"|"CLOSED"|null}
- */
-function switchBotToDoorStatus(sb) {
-  if (sb === true) return "OPEN";
-  if (sb === false) return "CLOSED";
-  return null;
-}
-
-/**
- * 僅 OPEN↔CLOSED 算邊緣；null 進出不算。
- * @param {"OPEN"|"CLOSED"|null|undefined} prev
- * @param {"OPEN"|"CLOSED"|null} curr
- * @returns {"OPEN"|"CLOSED"|null}
- */
-function detectDoorStatusEdge(prev, curr) {
-  const prevOk = prev === "OPEN" || prev === "CLOSED";
-  const currOk = curr === "OPEN" || curr === "CLOSED";
-  if (!prevOk || !currOk || prev === curr) return null;
-  return curr;
-}
-
-function formatDoorStatusZh(status) {
-  return status === "OPEN" ? "開" : status === "CLOSED" ? "關" : "未知";
-}
-
-/**
- * 邊緣偵測 + 位準一致。
- * @param {unknown} candyHouseStatus
- * @param {unknown} sensors
- * @param {{ prevCh?: string|null; prevSb?: string|null }} [prev]
- * @returns {{
- *   status: "OPEN"|"CLOSED"|null;
- *   conflict: boolean;
- *   mismatch: boolean;
- *   oppositeEdges: boolean;
- *   conflictMessage?: string;
- *   currentCh: "OPEN"|"CLOSED"|null;
- *   currentSb: "OPEN"|"CLOSED"|null;
- * }}
- */
-function resolveEffectiveDoorState(candyHouseStatus, sensors, prev = {}) {
-  const ch =
-    candyHouseStatus === "OPEN" || candyHouseStatus === "CLOSED"
-      ? candyHouseStatus
-      : null;
-  const sb = switchBotToDoorStatus(readDoorOpenFromSensors(sensors));
-  const prevCh =
-    prev.prevCh === "OPEN" || prev.prevCh === "CLOSED" ? prev.prevCh : null;
-  const prevSb =
-    prev.prevSb === "OPEN" || prev.prevSb === "CLOSED" ? prev.prevSb : null;
-
-  const chEdge = detectDoorStatusEdge(prevCh, ch);
-  const sbEdge = detectDoorStatusEdge(prevSb, sb);
-  const bothValid = ch !== null && sb !== null;
-  const mismatch = bothValid && ch !== sb;
-  const agree = bothValid && ch === sb;
-
-  if (chEdge && sbEdge && chEdge !== sbEdge) {
-    return {
-      status: null,
-      conflict: true,
-      mismatch: true,
-      oppositeEdges: true,
-      conflictMessage: `感測器同一輪反向變化：Candy House 轉為${formatDoorStatusZh(chEdge)}、SwitchBot 轉為${formatDoorStatusZh(sbEdge)}`,
-      currentCh: ch,
-      currentSb: sb,
-    };
-  }
-
-  let status = null;
-  if (chEdge && sbEdge) {
-    status = chEdge;
-  } else if (chEdge) {
-    status = chEdge;
-  } else if (sbEdge) {
-    status = sbEdge;
-  } else if (agree) {
-    status = ch;
-  }
-
-  return {
-    status,
-    conflict: false,
-    mismatch,
-    oppositeEdges: false,
-    conflictMessage: mismatch
-      ? `感測器狀態不一致：Candy House ${formatDoorStatusZh(ch)}、SwitchBot ${formatDoorStatusZh(sb)}`
-      : undefined,
-    currentCh: ch,
-    currentSb: sb,
-  };
-}
-
-/**
- * 手動 /manual_close 覆寫（normal 模式）：感測仍判開時維持關，直到兩邊一致為關。
- * @param {{
- *   status: "OPEN"|"CLOSED"|null;
- *   conflict: boolean;
- *   mismatch?: boolean;
- *   oppositeEdges?: boolean;
- *   conflictMessage?: string;
- *   currentCh?: "OPEN"|"CLOSED"|null;
- *   currentSb?: "OPEN"|"CLOSED"|null;
- * }} resolution
- * @param {boolean} overrideActive
- */
-function applyManualClosedOverride(resolution, overrideActive) {
-  if (!overrideActive) return resolution;
-  if (
-    resolution.currentCh === "CLOSED" &&
-    resolution.currentSb === "CLOSED" &&
-    !resolution.oppositeEdges
-  ) {
-    return { ...resolution, status: "CLOSED", conflict: false };
-  }
-  return {
-    ...resolution,
-    status: "CLOSED",
-    conflict: false,
-  };
-}
 
 /**
  * @param {number} candyFinishedMs
@@ -895,7 +744,7 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
   if (rawResolution.oppositeEdges) {
     await notifyOppositeEdgeConflict(env, rawResolution.conflictMessage);
     const streak = await bumpMismatchStreak(env);
-    if (streak >= SENSOR_MISMATCH_STREAK_NOTIFY_THRESHOLD) {
+    if (isLongTermMismatch(streak)) {
       if (hadConflictActive !== "1") {
         await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
       }
@@ -919,7 +768,7 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
   if (rawResolution.mismatch) {
     const streak = await bumpMismatchStreak(env);
     let longTerm = false;
-    if (streak >= SENSOR_MISMATCH_STREAK_NOTIFY_THRESHOLD) {
+    if (isLongTermMismatch(streak)) {
       longTerm = true;
       if (hadConflictActive !== "1") {
         await env.LOCK_STATE.put("last_sensor_conflict_active", "1");

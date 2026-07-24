@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
-    "session:update": "node update-session.js"
+    "session:update": "node update-session.js",
+    "test": "node --test test/**/*.test.js"
   },
   "dependencies": {
     "@cloudflare/playwright": "^0.0.10",

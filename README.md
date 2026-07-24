@@ -32,7 +32,7 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 
 ## 開關門狀態：合併規則
 
-對外顯示的「工寮是否開放」（`effective_status` / `state.open`）由 `resolveEffectiveDoorState()` 決定，採 **邊緣偵測 + 位準一致** 混合規則。輸入為 **Candy House（CH）** 與 **SwitchBot（SB）**；每次成功解析後會把各邊讀數存入 KV，供下一輪比對邊緣。
+對外顯示的「工寮是否開放」（`effective_status` / `state.open`）由 `src/door-state.js` 的 `resolveEffectiveDoorState()` 決定，採 **邊緣偵測 + 位準一致** 混合規則。輸入為 **Candy House（CH）** 與 **SwitchBot（SB）**；Cron 每次解析後會把各邊讀數寫入 KV（`last_ch_sensor_status` / `last_sb_sensor_status`），供下一輪比對邊緣。單元測試：`npm test`（`test/door-state.test.js`）。
 
 > CH 逾時／讀取失敗時，合併計算會使用 KV 中上次成功的 `last_status` 作為 CH 輸入（若與上一輪 CH 快照相同，則 **不會** 產生假邊緣）。
 
@@ -47,7 +47,7 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 
 - 每個感測器各自與上一輪快照比對。
 - **只有** `OPEN ↔ CLOSED`（或 SB 的開 ↔ 關）算邊緣；`無資料 ↔ 有資料` **不算**邊緣。
-- 任一感測器出現邊緣 → 有效狀態改為**該次變化後的狀態**（開或關）。
+- 任一感測器出現邊緣 → 有效狀態改為**該次變化後的狀態**（開或關），即使另一邊仍相反（此時會標 `mismatch`，但仍更新有效狀態）。
 - 同一輪兩邊邊緣方向相同 → 採用該狀態。
 
 ### 位準一致（level）
@@ -62,16 +62,34 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 3. 否則若兩邊位準一致 → 有效狀態跟一致結果。
 4. 否則（含穩定不一致、資料不足）→ **不更新**，沿用 `last_effective_status`。
 
+### 常見情境（範例）
+
+| 上一輪 CH / SB | 本輪 CH / SB | 結果 |
+|----------------|--------------|------|
+| 關 / 關 | 開 / 關 | **開**（CH 邊緣；`mismatch`） |
+| 開 / 開 | 開 / 關 | **關**（SB 邊緣；`mismatch`） |
+| 關 / 關 | 開 / 開 | **開**（雙邊同向邊緣，或位準一致） |
+| 開 / 關 | 開 / 關 | **不更新**（穩定不一致；無邊緣） |
+| 關 / 開 | 開 / 關 | **不更新** + **立刻警告**（同輪反向邊緣） |
+| （無快照） | 開 / 開 | **開**（位準一致；`null→有資料` 不算邊緣） |
+| （無快照） | 開 / （無） | **不更新**（無邊緣、位準不成立） |
+
 ### 感測器不一致（兩邊皆有讀數且矛盾）
 
 | 情況 | 行為 |
 |------|------|
-| 穩定不一致（無邊緣，或未觸發「同輪反向」） | 不更新有效狀態；**不立即通知** |
-| 連續 **3** 次 Cron 輪詢皆不一致 | 視為長期不一致：通知主群組一次；`last_sensor_conflict_active`；API `sensor_conflict: true` |
-| 同輪反向邊緣 | 不更新有效狀態；**立即**通知主群組（與長期計次分開） |
-| 恢復一致（或不再 mismatch） | 清零不一致計次；若曾進入長期衝突，主群組再通知 `感測器狀態已恢復一致` |
+| 穩定不一致（無邊緣） | 不更新有效狀態；**不立即通知**；`sensor_mismatch_streak` +1 |
+| 有邊緣但仍 mismatch（例如一邊剛轉開、另一邊仍關） | **仍更新**有效狀態（跟邊緣）；streak +1；未達門檻不通知 |
+| 連續 **3** 次 Cron 皆 mismatch（含上列） | 視為長期不一致：主群組通知一次；設 `last_sensor_conflict_active`；API `sensor_conflict: true` |
+| 同輪反向邊緣 | 不更新有效狀態；**立即**另發警告；streak 仍 +1（與「立即警告」分開，達 3 次仍可進長期告警） |
+| 恢復一致（或不再 mismatch） | 清零 `sensor_mismatch_streak`；若曾進入長期衝突，主群組再通知 `感測器狀態已恢復一致` |
 
-Cron **照常執行**，不因不一致進入隔離模式。短期不一致期間對外 `state.open` 仍沿用 `last_effective_status`。
+Cron **照常執行**，不因不一致進入隔離模式。短期不一致且無新結論時，對外 `state.open` 仍沿用 `last_effective_status`。
+
+### 與手動覆寫的關係
+
+- `manual_closed_override`：合併結果之後強制對外為 **關**；直到本輪 CH、SB **皆為 CLOSED** 且非同輪反向邊緣，才自動解除覆寫。
+- `manual_open_muted`：Cron 略過合併／Candy House，對外強制 **開**（見下方「監控模式」）。
 
 ## 監控模式與手動指令
 
@@ -242,9 +260,12 @@ npm run session:update            # 登入後直接寫入 LOCK_STATE KV（不經
 npm install
 cp .dev.vars.example .dev.vars
 
+npm test                       # 開關門合併規則單元測試（node:test）
+
 npm run session:update         # 登入並寫入正式 LOCK_STATE KV（wrangler）
 
 node --check src/index.js
+node --check src/door-state.js
 node --check src/open-sensor-ws.js
 node --check update-session.js
 npx wrangler deploy --dry-run
@@ -304,7 +325,8 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 
 | 檔案 | 說明 |
 |------|------|
-| `src/index.js` | Worker 主程式（合併邏輯、排程、API、Telegram） |
+| `src/index.js` | Worker 主程式（排程、API、Telegram、通知） |
+| `src/door-state.js` | 開關門合併規則（邊緣／位準／手動覆寫）；`npm test` 覆蓋此模組 |
 | `src/open-sensor-ws.js` | Candy House WebSocket 解析與 Playwright 旁聽 |
 | `update-session.js` | 本機登入與 session 匯入 |
 | `wrangler.toml` | Worker 綁定、cron、路由 |
