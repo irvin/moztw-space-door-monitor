@@ -20,6 +20,11 @@ const TELEGRAM_BOT_USERNAME = "moztw_space_new_event_bot";
 const SENSOR_ANNOUNCEMENT_BYLINE = "（by 大門感應器）";
 const LAST_ERROR_NOTIFIED_KEY_KV = "last_error_notified_key";
 const SENSOR_CONFLICT_NOTIFY_KEY = "sensor_conflict";
+const LAST_CH_SENSOR_STATUS_KV_KEY = "last_ch_sensor_status";
+const LAST_SB_SENSOR_STATUS_KV_KEY = "last_sb_sensor_status";
+const SENSOR_MISMATCH_STREAK_KV_KEY = "sensor_mismatch_streak";
+/** 連續多少次 Cron mismatch 才視為長期不一致並通知 */
+const SENSOR_MISMATCH_STREAK_NOTIFY_THRESHOLD = 3;
 const STATUS_CACHE_TAG = "door-monitor-status";
 const API_CACHE_TAG = "door-monitor-api";
 
@@ -64,53 +69,127 @@ function readDoorOpenFromSensors(sensors) {
 }
 
 /**
+ * @param {boolean|null} sb
+ * @returns {"OPEN"|"CLOSED"|null}
+ */
+function switchBotToDoorStatus(sb) {
+  if (sb === true) return "OPEN";
+  if (sb === false) return "CLOSED";
+  return null;
+}
+
+/**
+ * 僅 OPEN↔CLOSED 算邊緣；null 進出不算。
+ * @param {"OPEN"|"CLOSED"|null|undefined} prev
+ * @param {"OPEN"|"CLOSED"|null} curr
+ * @returns {"OPEN"|"CLOSED"|null}
+ */
+function detectDoorStatusEdge(prev, curr) {
+  const prevOk = prev === "OPEN" || prev === "CLOSED";
+  const currOk = curr === "OPEN" || curr === "CLOSED";
+  if (!prevOk || !currOk || prev === curr) return null;
+  return curr;
+}
+
+function formatDoorStatusZh(status) {
+  return status === "OPEN" ? "開" : status === "CLOSED" ? "關" : "未知";
+}
+
+/**
+ * 邊緣偵測 + 位準一致。
+ * @param {unknown} candyHouseStatus
+ * @param {unknown} sensors
+ * @param {{ prevCh?: string|null; prevSb?: string|null }} [prev]
  * @returns {{
  *   status: "OPEN"|"CLOSED"|null;
  *   conflict: boolean;
+ *   mismatch: boolean;
+ *   oppositeEdges: boolean;
  *   conflictMessage?: string;
+ *   currentCh: "OPEN"|"CLOSED"|null;
+ *   currentSb: "OPEN"|"CLOSED"|null;
  * }}
  */
-function resolveEffectiveDoorState(candyHouseStatus, sensors) {
+function resolveEffectiveDoorState(candyHouseStatus, sensors, prev = {}) {
   const ch =
     candyHouseStatus === "OPEN" || candyHouseStatus === "CLOSED"
       ? candyHouseStatus
       : null;
-  const sb = readDoorOpenFromSensors(sensors);
+  const sb = switchBotToDoorStatus(readDoorOpenFromSensors(sensors));
+  const prevCh =
+    prev.prevCh === "OPEN" || prev.prevCh === "CLOSED" ? prev.prevCh : null;
+  const prevSb =
+    prev.prevSb === "OPEN" || prev.prevSb === "CLOSED" ? prev.prevSb : null;
 
-  if (ch && sb !== null) {
-    const chOpen = ch === "OPEN";
-    if (chOpen !== sb) {
-      return {
-        status: null,
-        conflict: true,
-        conflictMessage: `感測器狀態不一致：Candy House ${ch === "OPEN" ? "開" : "關"}、SwitchBot ${sb ? "開" : "關"}`,
-      };
-    }
+  const chEdge = detectDoorStatusEdge(prevCh, ch);
+  const sbEdge = detectDoorStatusEdge(prevSb, sb);
+  const bothValid = ch !== null && sb !== null;
+  const mismatch = bothValid && ch !== sb;
+  const agree = bothValid && ch === sb;
+
+  if (chEdge && sbEdge && chEdge !== sbEdge) {
+    return {
+      status: null,
+      conflict: true,
+      mismatch: true,
+      oppositeEdges: true,
+      conflictMessage: `感測器同一輪反向變化：Candy House 轉為${formatDoorStatusZh(chEdge)}、SwitchBot 轉為${formatDoorStatusZh(sbEdge)}`,
+      currentCh: ch,
+      currentSb: sb,
+    };
   }
 
-  if (ch === "CLOSED" || sb === false) {
-    return { status: "CLOSED", conflict: false };
+  let status = null;
+  if (chEdge && sbEdge) {
+    status = chEdge;
+  } else if (chEdge) {
+    status = chEdge;
+  } else if (sbEdge) {
+    status = sbEdge;
+  } else if (agree) {
+    status = ch;
   }
-  if (ch === "OPEN") {
-    return { status: "OPEN", conflict: false };
-  }
-  if (sb === true) {
-    return { status: "OPEN", conflict: false };
-  }
-  return { status: null, conflict: false };
+
+  return {
+    status,
+    conflict: false,
+    mismatch,
+    oppositeEdges: false,
+    conflictMessage: mismatch
+      ? `感測器狀態不一致：Candy House ${formatDoorStatusZh(ch)}、SwitchBot ${formatDoorStatusZh(sb)}`
+      : undefined,
+    currentCh: ch,
+    currentSb: sb,
+  };
 }
 
 /**
- * 手動 /manual_close 覆寫（normal 模式）：感測仍判開時維持關，直到感測一致為關。
- * @param {{ status: "OPEN"|"CLOSED"|null; conflict: boolean; conflictMessage?: string }} resolution
+ * 手動 /manual_close 覆寫（normal 模式）：感測仍判開時維持關，直到兩邊一致為關。
+ * @param {{
+ *   status: "OPEN"|"CLOSED"|null;
+ *   conflict: boolean;
+ *   mismatch?: boolean;
+ *   oppositeEdges?: boolean;
+ *   conflictMessage?: string;
+ *   currentCh?: "OPEN"|"CLOSED"|null;
+ *   currentSb?: "OPEN"|"CLOSED"|null;
+ * }} resolution
  * @param {boolean} overrideActive
  */
 function applyManualClosedOverride(resolution, overrideActive) {
   if (!overrideActive) return resolution;
-  if (resolution.status === "CLOSED" && !resolution.conflict) {
-    return resolution;
+  if (
+    resolution.currentCh === "CLOSED" &&
+    resolution.currentSb === "CLOSED" &&
+    !resolution.oppositeEdges
+  ) {
+    return { ...resolution, status: "CLOSED", conflict: false };
   }
-  return { status: "CLOSED", conflict: false };
+  return {
+    ...resolution,
+    status: "CLOSED",
+    conflict: false,
+  };
 }
 
 /**
@@ -135,27 +214,35 @@ function computeCombinedLastchangeSec(candyFinishedMs, sensors) {
  */
 function enrichStatusWithDoorState(status, sensors) {
   const overrideActive = status.manual_closed_override === "1";
-  let resolution = resolveEffectiveDoorState(status.last_status, sensors);
+  let resolution = resolveEffectiveDoorState(status.last_status, sensors, {
+    prevCh: status.last_ch_sensor_status,
+    prevSb: status.last_sb_sensor_status,
+  });
   resolution = applyManualClosedOverride(resolution, overrideActive);
   const doorOpen = readDoorOpenFromSensors(sensors);
-  const effective_status = resolution.conflict
-    ? status.last_effective_status || "CONFLICT"
-    : resolution.status ||
-      status.last_effective_status ||
-      status.last_status ||
-      "UNKNOWN";
+  const longTermConflict = status.last_sensor_conflict_active === "1";
+  const sensor_conflict = longTermConflict || resolution.oppositeEdges;
+  const effective_status =
+    resolution.status ||
+    status.last_effective_status ||
+    status.last_status ||
+    "UNKNOWN";
+  const resolvedOpen =
+    resolution.status === "OPEN"
+      ? true
+      : resolution.status === "CLOSED"
+        ? false
+        : status.last_effective_status === "OPEN"
+          ? true
+          : status.last_effective_status === "CLOSED"
+            ? false
+            : undefined;
   return {
     ...status,
     door_open: doorOpen,
     manual_closed_override: overrideActive,
-    sensor_conflict: resolution.conflict,
-    effective_open: resolution.conflict
-      ? undefined
-      : resolution.status === "OPEN"
-        ? true
-        : resolution.status === "CLOSED"
-          ? false
-          : undefined,
+    sensor_conflict,
+    effective_open: resolvedOpen,
     effective_status,
   };
 }
@@ -267,7 +354,7 @@ function renderStatusHtml(status) {
     }
     ${
       status.sensor_conflict
-        ? `<div class="banner">感測器狀態不一致（Candy House 與 SwitchBot 相左）：暫不更新開關門判斷，已通知公告頻道。</div>`
+        ? `<div class="banner">感測器狀態異常（長期不一致或同輪反向變化）：對外暫沿用上次有效開關狀態，已通知主群組。</div>`
         : ""
     }
     <div class="label">目前狀態（CH+SB 合併）</div>
@@ -462,7 +549,11 @@ async function handleTelegramWebhook(request, env, ctx) {
 
       // 手動開門已對外為「開」：寫入 last_status，避免恢復感測或並發 run 讀到仍為 OPEN 時再發一次感測公告／主群通知（與 manual_close 對稱）
       await env.LOCK_STATE.put("last_status", "OPEN");
+      await env.LOCK_STATE.put(LAST_CH_SENSOR_STATUS_KV_KEY, "OPEN");
       await env.LOCK_STATE.put("last_effective_status", "OPEN");
+      await env.LOCK_STATE.delete(SENSOR_MISMATCH_STREAK_KV_KEY);
+      await env.LOCK_STATE.delete("last_sensor_conflict_active");
+      await env.LOCK_STATE.delete("last_conflict_notified");
 
       const dt = formatTaipeiDateTime(new Date());
       const closeHint = `/manual_close@${botUser}`;
@@ -492,7 +583,11 @@ async function handleTelegramWebhook(request, env, ctx) {
       }
 
       await env.LOCK_STATE.put("last_status", "CLOSED");
+      await env.LOCK_STATE.put(LAST_CH_SENSOR_STATUS_KV_KEY, "CLOSED");
       await env.LOCK_STATE.put("last_effective_status", "CLOSED");
+      await env.LOCK_STATE.delete(SENSOR_MISMATCH_STREAK_KV_KEY);
+      await env.LOCK_STATE.delete("last_sensor_conflict_active");
+      await env.LOCK_STATE.delete("last_conflict_notified");
 
       try {
         await sendManualDoorAnnouncement(
@@ -697,6 +792,36 @@ async function notifySensorConflict(env, conflictMessage) {
   }
 }
 
+async function notifyOppositeEdgeConflict(env, conflictMessage) {
+  if (!conflictMessage) return;
+  await sendTelegram(env, conflictMessage);
+}
+
+async function persistSensorSnapshots(env, resolution) {
+  if (resolution.currentCh === "OPEN" || resolution.currentCh === "CLOSED") {
+    await env.LOCK_STATE.put(LAST_CH_SENSOR_STATUS_KV_KEY, resolution.currentCh);
+  }
+  if (resolution.currentSb === "OPEN" || resolution.currentSb === "CLOSED") {
+    await env.LOCK_STATE.put(LAST_SB_SENSOR_STATUS_KV_KEY, resolution.currentSb);
+  }
+}
+
+async function readMismatchStreak(env) {
+  const raw = await env.LOCK_STATE.get(SENSOR_MISMATCH_STREAK_KV_KEY);
+  const n = Number(raw || 0);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+async function bumpMismatchStreak(env) {
+  const next = (await readMismatchStreak(env)) + 1;
+  await env.LOCK_STATE.put(SENSOR_MISMATCH_STREAK_KV_KEY, String(next));
+  return next;
+}
+
+async function clearMismatchTracking(env) {
+  await env.LOCK_STATE.delete(SENSOR_MISMATCH_STREAK_KV_KEY);
+}
+
 async function publishEffectiveStatusChange(env, ctx, status) {
   await sendTelegram(
     env,
@@ -735,16 +860,25 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
   const sensors = input.sensors;
   const candyForCombine =
     input.freshCandyStatus ?? (await env.LOCK_STATE.get("last_status"));
-  const overrideActive =
-    (await env.LOCK_STATE.get(MANUAL_CLOSED_OVERRIDE_KV_KEY)) === "1";
-  let resolution = resolveEffectiveDoorState(candyForCombine, sensors);
+  const [prevCh, prevSb, overrideFlag] = await Promise.all([
+    env.LOCK_STATE.get(LAST_CH_SENSOR_STATUS_KV_KEY),
+    env.LOCK_STATE.get(LAST_SB_SENSOR_STATUS_KV_KEY),
+    env.LOCK_STATE.get(MANUAL_CLOSED_OVERRIDE_KV_KEY),
+  ]);
+  const overrideActive = overrideFlag === "1";
+  let resolution = resolveEffectiveDoorState(candyForCombine, sensors, {
+    prevCh,
+    prevSb,
+  });
   const rawResolution = resolution;
   resolution = applyManualClosedOverride(resolution, overrideActive);
 
+  await persistSensorSnapshots(env, rawResolution);
+
   if (
     overrideActive &&
-    rawResolution.status === "CLOSED" &&
-    !rawResolution.conflict
+    rawResolution.currentCh === "CLOSED" &&
+    rawResolution.currentSb === "CLOSED"
   ) {
     await env.LOCK_STATE.delete(MANUAL_CLOSED_OVERRIDE_KV_KEY);
   }
@@ -758,17 +892,59 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
     await clearMonitorErrorNotification(env);
   }
 
-  if (resolution.conflict) {
-    if (hadConflictActive !== "1") {
-      await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
+  if (rawResolution.oppositeEdges) {
+    await notifyOppositeEdgeConflict(env, rawResolution.conflictMessage);
+    const streak = await bumpMismatchStreak(env);
+    if (streak >= SENSOR_MISMATCH_STREAK_NOTIFY_THRESHOLD) {
+      if (hadConflictActive !== "1") {
+        await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
+      }
+      await notifySensorConflict(
+        env,
+        `感測器狀態長期不一致（連續 ${streak} 次）：Candy House ${formatDoorStatusZh(rawResolution.currentCh)}、SwitchBot ${formatDoorStatusZh(rawResolution.currentSb)}`,
+      );
     }
-    await notifySensorConflict(env, resolution.conflictMessage);
-    if (ctx) {
+    if (resolution.status && resolution.status !== prevEffective) {
+      await env.LOCK_STATE.put("last_effective_status", resolution.status);
+      await publishEffectiveStatusChange(env, ctx, resolution.status);
+    } else if (ctx) {
       ctx.waitUntil(invalidatePublicResponseCache(ctx));
     }
-    return { conflict: true, conflictMessage: resolution.conflictMessage };
+    return {
+      conflict: true,
+      conflictMessage: rawResolution.conflictMessage,
+    };
   }
 
+  if (rawResolution.mismatch) {
+    const streak = await bumpMismatchStreak(env);
+    let longTerm = false;
+    if (streak >= SENSOR_MISMATCH_STREAK_NOTIFY_THRESHOLD) {
+      longTerm = true;
+      if (hadConflictActive !== "1") {
+        await env.LOCK_STATE.put("last_sensor_conflict_active", "1");
+      }
+      await notifySensorConflict(
+        env,
+        `感測器狀態長期不一致（連續 ${streak} 次）：Candy House ${formatDoorStatusZh(rawResolution.currentCh)}、SwitchBot ${formatDoorStatusZh(rawResolution.currentSb)}`,
+      );
+    }
+    if (resolution.status && resolution.status !== prevEffective) {
+      await env.LOCK_STATE.put("last_effective_status", resolution.status);
+      await publishEffectiveStatusChange(env, ctx, resolution.status);
+    } else if (longTerm && ctx) {
+      ctx.waitUntil(invalidatePublicResponseCache(ctx));
+    }
+    return {
+      conflict: longTerm,
+      conflictMessage: longTerm
+        ? rawResolution.conflictMessage ||
+          `感測器狀態長期不一致（連續 ${streak} 次）`
+        : undefined,
+    };
+  }
+
+  await clearMismatchTracking(env);
   if (hadConflictActive === "1") {
     await env.LOCK_STATE.delete("last_sensor_conflict_active");
     await env.LOCK_STATE.delete("last_conflict_notified");
@@ -792,6 +968,7 @@ async function runMonitor(env, ctx) {
     if (monitoringMode === MONITORING_MODE_MANUAL_OPEN_MUTED) {
       await Promise.all([
         putIfChanged(env, "last_status", "OPEN"),
+        putIfChanged(env, LAST_CH_SENSOR_STATUS_KV_KEY, "OPEN"),
         putIfChanged(env, "last_effective_status", "OPEN"),
       ]);
       await markRunFinish(env);
@@ -1115,16 +1292,21 @@ const STATUS_KV_KEYS = [
   "last_run_ok",
   "last_run_error",
   "last_status",
+  "last_ch_sensor_status",
+  "last_sb_sensor_status",
   "last_effective_status",
   "manual_closed_override",
   "monitoring_mode",
   "manual_mode_changed_at",
   "last_sensor_conflict_active",
+  "sensor_mismatch_streak",
 ];
 
 const API_STATUS_KV_KEYS = [
   "last_run_finished_at",
   "last_status",
+  "last_ch_sensor_status",
+  "last_sb_sensor_status",
   "last_effective_status",
   "manual_closed_override",
   "monitoring_mode",
@@ -1138,9 +1320,12 @@ const HTML_STATUS_KV_KEYS = [
   "last_run_ok",
   "last_run_error",
   "last_status",
+  "last_ch_sensor_status",
+  "last_sb_sensor_status",
   "last_effective_status",
   "manual_closed_override",
   "monitoring_mode",
+  "last_sensor_conflict_active",
 ];
 
 async function readStatus(env, keys = STATUS_KV_KEYS) {
@@ -1197,20 +1382,25 @@ function resolveApiOpenState(status, sensors, overrideActive, sensorsStale) {
     return { open, conflict };
   }
 
-  let resolution = resolveEffectiveDoorState(status.last_status, sensors);
+  let resolution = resolveEffectiveDoorState(status.last_status, sensors, {
+    prevCh: status.last_ch_sensor_status,
+    prevSb: status.last_sb_sensor_status,
+  });
   resolution = applyManualClosedOverride(resolution, overrideActive);
+  const conflict =
+    status.last_sensor_conflict_active === "1" || resolution.oppositeEdges;
   let open;
-  if (resolution.conflict) {
+  if (resolution.status) {
+    open = resolution.status === "OPEN";
+  } else {
     open =
       status.last_effective_status === "OPEN"
         ? true
         : status.last_effective_status === "CLOSED"
           ? false
           : undefined;
-  } else if (resolution.status) {
-    open = resolution.status === "OPEN";
   }
-  return { open, conflict: resolution.conflict };
+  return { open, conflict };
 }
 
 /** 監控路徑：stale 時同步 refresh yuaner。 */

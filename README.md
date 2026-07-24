@@ -32,31 +32,46 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 
 ## 開關門狀態：合併規則
 
-對外顯示的「工寮是否開放」（`effective_status` / `state.open`）由 `resolveEffectiveDoorState()` 決定，**Candy House（CH）** 與 **SwitchBot（SB）** 合併如下。
+對外顯示的「工寮是否開放」（`effective_status` / `state.open`）由 `resolveEffectiveDoorState()` 決定，採 **邊緣偵測 + 位準一致** 混合規則。輸入為 **Candy House（CH）** 與 **SwitchBot（SB）**；每次成功解析後會把各邊讀數存入 KV，供下一輪比對邊緣。
 
-### 一般合併（無衝突）
+> CH 逾時／讀取失敗時，合併計算會使用 KV 中上次成功的 `last_status` 作為 CH 輸入（若與上一輪 CH 快照相同，則 **不會** 產生假邊緣）。
 
-| 條件 | 結果 |
+### 讀數正規化
+
+| 來源 | 有效值 | 無效 |
+|------|--------|------|
+| Candy House | `OPEN` / `CLOSED` | 其它／無資料 → 不參與該邊判斷 |
+| SwitchBot | `door_open[0].value` 為 `true`（開）／`false`（關） | 非 boolean → 不參與 |
+
+### 邊緣偵測（edge）
+
+- 每個感測器各自與上一輪快照比對。
+- **只有** `OPEN ↔ CLOSED`（或 SB 的開 ↔ 關）算邊緣；`無資料 ↔ 有資料` **不算**邊緣。
+- 任一感測器出現邊緣 → 有效狀態改為**該次變化後的狀態**（開或關）。
+- 同一輪兩邊邊緣方向相同 → 採用該狀態。
+
+### 位準一致（level）
+
+- 兩邊**都有**有效讀數且相同 → 有效狀態改為該一致狀態（用來校正漏採樣、重啟後卡住等）。
+- 僅一邊有資料 → 位準規則不成立（只可能靠該邊的邊緣更新）。
+
+### 套用優先順序（單次解析）
+
+1. **同一輪兩邊往相反方向變**（例如 CH 轉開、SB 轉關）→ **不更新** `last_effective_status`；視為感測器異常，**立刻**通知主群組。
+2. 否則若有邊緣（單邊或雙邊同向）→ 有效狀態跟邊緣結果。
+3. 否則若兩邊位準一致 → 有效狀態跟一致結果。
+4. 否則（含穩定不一致、資料不足）→ **不更新**，沿用 `last_effective_status`。
+
+### 感測器不一致（兩邊皆有讀數且矛盾）
+
+| 情況 | 行為 |
 |------|------|
-| CH **OPEN** + SB **open** | **開** |
-| CH **OPEN** + SB **逾時／無資料** | **開** |
-| CH **CLOSED** 或 SB **close** | **關** |
-| CH **逾時** + SB **open** | **開** |
-| CH **逾時** + SB **close** | **關** |
-| 兩邊皆無有效讀數 | 不更新（沿用 `last_effective_status`） |
+| 穩定不一致（無邊緣，或未觸發「同輪反向」） | 不更新有效狀態；**不立即通知** |
+| 連續 **3** 次 Cron 輪詢皆不一致 | 視為長期不一致：通知主群組一次；`last_sensor_conflict_active`；API `sensor_conflict: true` |
+| 同輪反向邊緣 | 不更新有效狀態；**立即**通知主群組（與長期計次分開） |
+| 恢復一致（或不再 mismatch） | 清零不一致計次；若曾進入長期衝突，主群組再通知 `感測器狀態已恢復一致` |
 
-> CH 逾時時，合併計算會使用 KV 中上次成功的 `last_status` 作為 CH 輸入。
-
-### 感測器衝突（兩邊皆有讀數且矛盾）
-
-| 條件 | 行為 |
-|------|------|
-| CH **OPEN** + SB **close**，或 CH **CLOSED** + SB **open** | **不做開關門判斷**（不更新 `last_effective_status`） |
-| 通知 | 發送至主群組 `TELEGRAM_CHAT_ID`（衝突期間只通知一次） |
-| Cron | **照常執行**，不進入隔離模式 |
-| API | `state.sensor_conflict: true`；`state.open` 沿用上次有效值 |
-
-衝突解除（兩邊讀數一致）時，主群組會收到 `感測器狀態已恢復一致`，之後恢復正常開關門通知。
+Cron **照常執行**，不因不一致進入隔離模式。短期不一致期間對外 `state.open` 仍沿用 `last_effective_status`。
 
 ## 監控模式與手動指令
 
@@ -131,7 +146,9 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
   - 主群組：`工寮大門：已開啟` / `工寮大門：已關閉`
   - 公告頻道：`#工寮開門 …（by 大門感應器）` 或 `#工寮關門 …`；開門時頻道標題 `Moz://TW（工寮開放中）`，關門 `Moz://TW`
 - **手動 `/manual_open` / `/manual_close`**：公告頻道改為 `（by @username）`；主群組在狀態實際變更時亦會收到開關門訊息
-- **感測器衝突**：主群組；衝突期間只通知一次（不因 CH/SB 開關組合字串不同而重複）；不更新 `last_effective_status`；Cron 不停止
+- **感測器同輪反向邊緣**：主群組立即警告；不更新 `last_effective_status`；Cron 不停止
+- **感測器長期不一致**（連續 3 次 Cron 皆 mismatch）：主群組通知一次；不因字串不同而重複；API `sensor_conflict`；Cron 不停止
+- **感測器恢復一致**（曾進入長期衝突後）：主群組 `感測器狀態已恢復一致`
 - **Candy House 讀取失敗**：主群組 `門鎖監控錯誤：…`（整段故障期間只通知一次，恢復成功後才重置）；SwitchBot 仍可參與合併；Cron 不停止
 - **Session 失效**（`/login`）：`門鎖監控需要重新登入，請重新匯入 session`
 - **Candy House 恢復成功**：先發 `門鎖監控已恢復正常`，再依合併狀態處理開關門
@@ -142,11 +159,14 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 |----|------|
 | `session_cookies` / `session_local_storage` | Candy House 登入 session；每次成功讀取狀態後同步更新並續期 |
 | `last_status` | 上次**成功**讀到的 Candy House 狀態（`OPEN` / `CLOSED`） |
+| `last_ch_sensor_status` | 上一輪參與合併的 CH 快照（供邊緣偵測） |
+| `last_sb_sensor_status` | 上一輪參與合併的 SB 快照（`OPEN` / `CLOSED`） |
 | `last_effective_status` | 上次對外有效的合併開關門狀態 |
 | `last_run_*` | 最近執行 id、時間、階段、成敗、錯誤 |
 | `last_error_notified_key` | 本次故障最先通知的監控錯誤類型（`relogin` / `ws_timeout` / `browser_init` / `other`）；恢復前不再重複通知 |
-| `last_conflict_notified` | 感測器衝突是否已通知（固定值 `sensor_conflict`） |
-| `last_sensor_conflict_active` | 感測器衝突進行中 |
+| `sensor_mismatch_streak` | 連續 mismatch 的 Cron 次數（字串數字） |
+| `last_conflict_notified` | 長期不一致是否已通知（固定值 `sensor_conflict`） |
+| `last_sensor_conflict_active` | 長期感測器不一致進行中 |
 | `monitoring_mode` | `normal` 或 `manual_open_muted` |
 | `manual_mode_changed_at` | 最近一次切換監控模式（ISO） |
 | `manual_closed_override` | 手動關門覆寫（`"1"`） |
@@ -168,9 +188,9 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 |------|------|
 | `last_status` | Candy House 上次成功讀數 |
 | `door_open` | SwitchBot `door_open`（`true` / `false` / `null`） |
-| `effective_status` | 合併後對外狀態（`OPEN` / `CLOSED` / `CONFLICT`） |
-| `effective_open` | 合併後布林（衝突時可能為 `undefined`） |
-| `sensor_conflict` | 感測器是否衝突 |
+| `effective_status` | 合併後對外狀態（`OPEN` / `CLOSED` / `UNKNOWN`；短期不一致時沿用上次有效值） |
+| `effective_open` | 合併後布林 |
+| `sensor_conflict` | 長期不一致或同輪反向邊緣 |
 | `manual_closed_override` | 是否為手動關門覆寫 |
 | `monitoring_mode` / `sensor_muted` | 監控模式 |
 | `last_run_ok` / `last_run_error` | 最近 Candy House 讀取成敗 |
@@ -179,10 +199,10 @@ Candy House 以既有登入 session（cookies + localStorage）開啟狀態頁�
 
 | 欄位 | 說明 |
 |------|------|
-| `open` | 合併後是否開放；衝突時沿用 `last_effective_status`；`manual_closed_override` 時為 `false` |
+| `open` | 合併後是否開放；無新結論時沿用 `last_effective_status`；`manual_closed_override` 時為 `false` |
 | `lastchange` | CH 與 SB `door_open[].lastchange` 較新者（Unix 秒） |
 | `sensor_muted` | 手動開門隔離中 |
-| `sensor_conflict` | 感測器衝突中（不更新開關判斷） |
+| `sensor_conflict` | 長期不一致（連續 3 次）或同輪反向邊緣 |
 | `manual_closed_override` | 手動關門覆寫中（`normal` 模式） |
 
 `sensors` 含溫度、濕度、CO₂、`door_open`、`illuminance` 等（來自 yuaner API，單層結構）。
@@ -276,7 +296,7 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 
 - **Candy House WebSocket 逾時**：session 可能仍有效；確認 DevTools → Network → WS 是否有 `PubedCompanyDevice` 且工寮 UUID 帶 `CHSesame2Status`。定期執行 `npm run session:update` 更新 session。
 - **SwitchBot 無資料**：確認 `https://moztw-co2.yuaner.tw/sensors` 含 `door_open`。
-- **感測器衝突**：兩邊讀數矛盾時刻意不判斷；請至現場或 Candy House / SwitchBot 確認實際狀態。
+- **感測器不一致**：短期矛盾不通知、沿用上次有效狀態；連續 3 次才告警。同輪兩邊反向變化會立即警告。請至現場或 Candy House / SwitchBot 確認。
 - **Browser 503**：同一輪內會重試；重試完仍失敗才通知，下一輪 Cron 仍會執行。
 - **Session 更新除錯**：`update-session.js` 與 Worker 共用 `src/open-sensor-ws.js`。
 
