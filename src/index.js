@@ -1,4 +1,5 @@
 import { launch } from "@cloudflare/playwright";
+import { purgeZoneApiCache } from "./zone-cache.js";
 import {
   applyManualClosedOverride,
   formatDoorStatusZh,
@@ -404,6 +405,10 @@ async function handleTelegramWebhook(request, env, ctx) {
       await env.LOCK_STATE.delete("last_sensor_conflict_active");
       await env.LOCK_STATE.delete("last_conflict_notified");
 
+      if (ctx) {
+        ctx.waitUntil(invalidatePublicResponseCache(env, ctx));
+      }
+
       const dt = formatTaipeiDateTime(new Date());
       const closeHint = `/manual_close@${botUser}`;
       const bodyText =
@@ -412,9 +417,6 @@ async function handleTelegramWebhook(request, env, ctx) {
         closeHint;
 
       await sendTelegramToChat(env, allowedChat, bodyText, replyOpts);
-      if (ctx) {
-        ctx.waitUntil(invalidatePublicResponseCache(ctx));
-      }
       return json({ ok: true });
     }
 
@@ -437,6 +439,10 @@ async function handleTelegramWebhook(request, env, ctx) {
       await env.LOCK_STATE.delete(SENSOR_MISMATCH_STREAK_KV_KEY);
       await env.LOCK_STATE.delete("last_sensor_conflict_active");
       await env.LOCK_STATE.delete("last_conflict_notified");
+
+      if (ctx) {
+        ctx.waitUntil(invalidatePublicResponseCache(env, ctx));
+      }
 
       try {
         await sendManualDoorAnnouncement(
@@ -470,7 +476,6 @@ async function handleTelegramWebhook(request, env, ctx) {
               // 錯誤已由 runMonitor 內 Telegram 通知；webhook 仍回 200
             }),
           );
-          ctx.waitUntil(invalidatePublicResponseCache(ctx));
         }
         await sendTelegramToChat(
           env,
@@ -485,9 +490,6 @@ async function handleTelegramWebhook(request, env, ctx) {
           "已手動切換為關門（自動偵測仍運行；感測一致為關後解除覆寫）。",
           replyOpts,
         );
-        if (ctx) {
-          ctx.waitUntil(invalidatePublicResponseCache(ctx));
-        }
       }
       return json({ ok: true });
     }
@@ -672,6 +674,9 @@ async function clearMismatchTracking(env) {
 }
 
 async function publishEffectiveStatusChange(env, ctx, status) {
+  if (ctx) {
+    ctx.waitUntil(invalidatePublicResponseCache(env, ctx));
+  }
   await sendTelegram(
     env,
     status === "OPEN" ? "工寮大門：已開啟" : "工寮大門：已關閉",
@@ -696,9 +701,6 @@ async function publishEffectiveStatusChange(env, ctx, status) {
           : String(announcementError);
       await sendTelegram(env, `開關門公告發送失敗：${msg}`);
     }
-  }
-  if (ctx) {
-    ctx.waitUntil(invalidatePublicResponseCache(ctx));
   }
 }
 
@@ -757,7 +759,7 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
       await env.LOCK_STATE.put("last_effective_status", resolution.status);
       await publishEffectiveStatusChange(env, ctx, resolution.status);
     } else if (ctx) {
-      ctx.waitUntil(invalidatePublicResponseCache(ctx));
+      ctx.waitUntil(invalidatePublicResponseCache(env, ctx));
     }
     return {
       conflict: true,
@@ -782,7 +784,7 @@ async function processEffectiveStatusAndNotify(env, ctx, input) {
       await env.LOCK_STATE.put("last_effective_status", resolution.status);
       await publishEffectiveStatusChange(env, ctx, resolution.status);
     } else if (longTerm && ctx) {
-      ctx.waitUntil(invalidatePublicResponseCache(ctx));
+      ctx.waitUntil(invalidatePublicResponseCache(env, ctx));
     }
     return {
       conflict: longTerm,
@@ -822,7 +824,7 @@ async function runMonitor(env, ctx) {
       ]);
       await markRunFinish(env);
       if (ctx) {
-        ctx.waitUntil(invalidatePublicResponseCache(ctx));
+        ctx.waitUntil(invalidatePublicResponseCache(env, ctx));
       }
       return;
     }
@@ -1360,11 +1362,19 @@ async function refreshSensorsToKV(env, options = {}) {
   }
 }
 
-async function invalidatePublicResponseCache(ctx) {
-  try {
-    await ctx.cache.purge({ tags: [STATUS_CACHE_TAG, API_CACHE_TAG] });
-  } catch (error) {
-    console.warn("公開狀態快取清除失敗", error);
+async function invalidatePublicResponseCache(env, ctx) {
+  const results = await Promise.allSettled([
+    Promise.resolve().then(() =>
+      ctx.cache.purge({ tags: [STATUS_CACHE_TAG, API_CACHE_TAG] }),
+    ),
+    purgeZoneApiCache(env),
+  ]);
+  const labels = ["Workers 公開狀態快取清除失敗", "Zone 公開 API 快取清除失敗"];
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status === "rejected") {
+      const error = results[i].reason;
+      console.warn(labels[i], error instanceof Error ? error.message : String(error));
+    }
   }
 }
 

@@ -14,3 +14,7 @@
 
 # 等待 WebSocket 第一筆 PubedCompanyDevice 逾時（毫秒，選用）
 # WS_STATUS_TIMEOUT_MS="30000"
+
+# 狀態更新後清除 moztw.space/api 的 zone 快取（正式環境使用 wrangler secret put）
+# CLOUDFLARE_ZONE_ID="<moztw.space 的 32 字元 Zone ID>"
+# CLOUDFLARE_CACHE_PURGE_API_TOKEN="<僅授予 moztw.space / Cache Purge 的 API Token>"

@@ -200,6 +200,24 @@ Cron **照常執行**，不因不一致進入隔離模式。短期不一致且�
 
 自訂網域（`wrangler.toml`）：`https://moztw.space/status`、`/api`、`/telegram-webhook`。
 
+### 狀態更新後清除快取
+
+手動開關門或監控判定對外狀態變更後，先寫入狀態，再於背景分別清除：
+
+- Workers Cache：保留 `ctx.cache.purge()`，清除 `door-monitor-status` 與 `door-monitor-api` 標籤。
+- 網站 zone 快取：呼叫 Cloudflare `POST /zones/{zone_id}/purge_cache`，只送出 `files: ["https://moztw.space/api"]`。
+
+兩者各自執行；其中一項失敗不會阻止另一項，也不會回復已更新的開關狀態。Zone purge 設 5 秒逾時，並檢查 HTTP 狀態與 JSON 的 `success: true`。缺少設定或清除失敗會記錄警告。既有衝突狀態與手動開門隔離期間的快取清除也沿用此流程。
+
+正式環境須先設定以下兩項（Token 僅授予 `moztw.space` 的 `Cache Purge` 權限）：
+
+```bash
+wrangler secret put CLOUDFLARE_ZONE_ID
+wrangler secret put CLOUDFLARE_CACHE_PURGE_API_TOKEN
+```
+
+Zone purge 不會清除 Workers Cache 或訪客瀏覽器的快取，也不會讓 Worker 回應自動受 Cache Rule 快取。本次新增清除動作仍保留 `[cache] enabled = true` 與既有 HTTP TTL。實際是否清除網站快取須於部署後，以命中的 Cache Rule、快取鍵與清除前後的回應驗證；API 回傳成功僅代表接受清除請求。
+
 ### `/status` 重點欄位
 
 | 欄位 | 說明 |
@@ -297,6 +315,7 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 |------|------|
 | `TELEGRAM_ENABLED` | `wrangler.toml` `[vars]` |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | `wrangler secret` |
+| `CLOUDFLARE_ZONE_ID` / `CLOUDFLARE_CACHE_PURGE_API_TOKEN` | `wrangler secret`；狀態更新後清除 `moztw.space/api` 的 zone 快取 |
 | 公告頻道、Bot 使用者名稱 | `src/index.js`（`TELEGRAM_OPEN_ANNOUNCEMENT_CHAT_ID`、`TELEGRAM_BOT_USERNAME`） |
 | Cron 週期 | `wrangler.toml` `triggers.crons` |
 
