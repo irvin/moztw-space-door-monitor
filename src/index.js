@@ -36,7 +36,7 @@ const API_CACHE_TAG = "door-monitor-api";
 
 const SENSORS_KV_KEY = "sensors_cache";
 const SENSORS_REFRESH_INFLIGHT_KEY = "sensors_refresh_inflight";
-const SENSORS_REFRESH_INFLIGHT_TTL_SEC = 30;
+const SENSORS_REFRESH_INFLIGHT_TTL_SEC = 60;
 const SENSORS_REFRESH_THRESHOLD_MS = 10 * 60 * 1000;
 const SENSORS_FETCH_TIMEOUT_MS = 3000;
 const SENSORS_API_URL = "https://moztw-co2.yuaner.tw/sensors";
@@ -1305,37 +1305,57 @@ async function readSensorsFromKV(env) {
 
 async function refreshSensorsToKV(env, options = {}) {
   const force = options.force === true;
-  if (!force) {
-    const inflight = await env.LOCK_STATE.get(SENSORS_REFRESH_INFLIGHT_KEY);
-    if (inflight) return null;
-    await env.LOCK_STATE.put(SENSORS_REFRESH_INFLIGHT_KEY, "1", {
-      expirationTtl: SENSORS_REFRESH_INFLIGHT_TTL_SEC,
-    });
-  }
+  let acquiredLock = false;
 
   try {
+    if (!force) {
+      const inflight = await env.LOCK_STATE.get(SENSORS_REFRESH_INFLIGHT_KEY);
+      if (inflight) return null;
+      await env.LOCK_STATE.put(SENSORS_REFRESH_INFLIGHT_KEY, "1", {
+        expirationTtl: SENSORS_REFRESH_INFLIGHT_TTL_SEC,
+      });
+      acquiredLock = true;
+    }
+
     const resp = await withTimeout(
       fetch(SENSORS_API_URL),
       SENSORS_FETCH_TIMEOUT_MS,
       "sensors fetch timeout",
     );
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      console.warn("感測資料更新失敗：上游 HTTP", resp.status);
+      return null;
+    }
     const text = await resp.text();
     const parsed = JSON.parse(text);
     const data = normalizeSensorsPayload(parsed);
-    if (!data) return null;
+    if (!data) {
+      console.warn("感測資料更新失敗：上游資料格式無效");
+      return null;
+    }
     const cached = { fetched_at: Date.now(), data };
     await env.LOCK_STATE.put(
       SENSORS_KV_KEY,
       JSON.stringify(cached),
     );
     return cached;
-  } catch {
-    // 上游壞掉就不寫 KV，舊值保留；下次 request 仍會嘗試補
+  } catch (error) {
+    // KV 或上游失敗時保留舊資料，讓後續 request 仍可重試。
+    console.warn(
+      "感測資料更新失敗",
+      error instanceof Error ? error.message : String(error),
+    );
     return null;
   } finally {
-    if (!force) {
-      await env.LOCK_STATE.delete(SENSORS_REFRESH_INFLIGHT_KEY).catch(() => {});
+    if (acquiredLock) {
+      try {
+        await env.LOCK_STATE.delete(SENSORS_REFRESH_INFLIGHT_KEY);
+      } catch (error) {
+        console.warn(
+          "清除感測資料更新旗標失敗",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
   }
 }
